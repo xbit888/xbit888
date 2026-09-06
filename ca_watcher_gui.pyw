@@ -120,6 +120,14 @@ TR = {
                               "zh": "代币已迁移到 DEX——请点击停止后重新开始。"},
     "log_unexpected_error": {"ru": "Неожиданная ошибка: {e}", "en": "Unexpected error: {e}", "zh": "发生意外错误：{e}"},
 
+    "row_bundle": {"ru": "БАНДЛ", "en": "BUNDLE", "zh": "捆绑检测"},
+    "bundle_checking_short": {"ru": "проверка...", "en": "checking...", "zh": "检测中..."},
+    "bundle_row_na": {"ru": "нет данных", "en": "n/a", "zh": "无数据"},
+    "bundle_row_early_only": {"ru": "{pct:.0f}% рано (без проверки раздатчика)",
+                               "en": "{pct:.0f}% early (no funder check)",
+                               "zh": "早期买入 {pct:.0f}%（未检测资金来源）"},
+    "bundle_row_bundled": {"ru": "⚠ {pct:.0f}% ПОХОЖЕ НА БАНДЛ", "en": "⚠ {pct:.0f}% LOOKS BUNDLED", "zh": "⚠ 疑似捆绑 {pct:.0f}%"},
+    "bundle_row_clean": {"ru": "✓ признаков не найдено", "en": "✓ no signs found", "zh": "✓ 未发现迹象"},
     "check_bundles": {"ru": "🔍 Бандлы", "en": "🔍 Bundles", "zh": "🔍 捆绑检测"},
     "bundle_checking": {"ru": "Проверяю бандлы...", "en": "Checking bundles...", "zh": "正在检测捆绑买入..."},
     "bundle_scanning_launch": {"ru": "Ищу самые первые сделки после запуска токена...",
@@ -1104,12 +1112,16 @@ def watch_evm_v4(ca, chain_id, pool_manager, pool_id, quote_token_address, quote
         emit("error", tr.t("log_block_number_error", e=e))
         return
 
+    backoff = interval
+    max_backoff = max(interval * 10, 30)
+
     while not stop_event.is_set():
         try:
             latest = int(evm_rpc_call(rpc_url, "eth_blockNumber", []), 16)
         except (urllib.error.URLError, TimeoutError, RuntimeError, json.JSONDecodeError) as e:
-            emit("error", tr.t("log_rpc_error", e=e, interval=interval))
-            stop_event.wait(interval)
+            emit("error", tr.t("log_rpc_error", e=e, interval=round(backoff, 1)))
+            stop_event.wait(backoff)
+            backoff = min(backoff * 2, max_backoff)
             continue
 
         if latest > last_block:
@@ -1119,9 +1131,12 @@ def watch_evm_v4(ca, chain_id, pool_manager, pool_id, quote_token_address, quote
                     "fromBlock": hex(last_block + 1), "toBlock": hex(latest),
                 }])
             except (urllib.error.URLError, TimeoutError, RuntimeError, json.JSONDecodeError) as e:
-                emit("error", tr.t("log_eth_getlogs_error", e=e, interval=interval))
-                stop_event.wait(interval)
+                emit("error", tr.t("log_eth_getlogs_error", e=e, interval=round(backoff, 1)))
+                stop_event.wait(backoff)
+                backoff = min(backoff * 2, max_backoff)
                 continue
+
+            backoff = interval  # успешный запрос — сбрасываем нарастающую паузу
 
             for lg in logs or []:
                 amount0 = evm_word_signed(lg["data"], 0)
@@ -1434,8 +1449,6 @@ class App:
         self.stop_btn.pack(side="left", padx=6)
         self.clear_btn = ttk.Button(btn_col, style="Ghost.TButton", command=self.clear)
         self.clear_btn.pack(side="left")
-        self.bundle_btn = ttk.Button(btn_col, style="Ghost.TButton", command=self.check_bundles)
-        self.bundle_btn.pack(side="left", padx=(6, 0))
 
         # ---- тело: три колонки ----
         body = ttk.Frame(self.root, padding=(18, 0, 18, 8))
@@ -1523,6 +1536,15 @@ class App:
             val.pack(anchor="w")
             self.token_rows[field] = (key, cap, val)
         self.meta_labels = self.token_rows  # обратная совместимость с update_meta()
+
+        tk.Frame(pad, bg=BORDER, height=1).pack(fill="x", pady=(4, 10))
+        bundle_row = tk.Frame(pad, bg=PANEL)
+        bundle_row.pack(fill="x")
+        self.bundle_row_cap = tk.Label(bundle_row, bg=PANEL, fg=MUTED, font=("Segoe UI", 8, "bold"), anchor="w")
+        self.bundle_row_cap.pack(anchor="w")
+        self.bundle_row_val = tk.Label(bundle_row, text="—", bg=PANEL, fg=TEXT,
+                                        font=("Consolas", 11, "bold"), anchor="w")
+        self.bundle_row_val.pack(anchor="w")
 
     def _build_feed_card(self, parent):
         card = self._card(parent, 1, weight=1)
@@ -1629,7 +1651,9 @@ class App:
         self.start_btn.configure(text=t("start"))
         self.stop_btn.configure(text=t("stop"))
         self.clear_btn.configure(text=t("clear"))
-        self.bundle_btn.configure(text=t("check_bundles"))
+        self.bundle_row_cap.configure(text=t("row_bundle"))
+        if not self.worker:
+            self.bundle_row_val.configure(text="—")
         self.status_var.set(t("status_ready") if not self.worker else t("status_running"))
 
         self.live_lbl.configure(text=t("live") if self._live_on else t("offline"))
@@ -1941,6 +1965,7 @@ class App:
         self.stat_sell_vol_val.configure(text="—")
         self.stat_net_val.configure(text="—", fg=TEXT)
         self.last_price_val.configure(text="—", fg=GREEN)
+        self.bundle_row_val.configure(text="—", fg=TEXT)
         self._redraw_sparkline()
 
     def start(self):
@@ -1982,9 +2007,13 @@ class App:
         self.worker = threading.Thread(target=worker, daemon=True)
         self.worker.start()
 
+        self.start_bundle_check(ca)  # бандл-проверка — главная функция, запускается сразу вместе со стартом
+
     def stop(self):
         if self.stop_event:
             self.stop_event.set()
+        if self._bundle_stop_event:
+            self._bundle_stop_event.set()
         self.worker = None
         self._live_on = False
         self.live_lbl.configure(text=self.tr.t("offline"))
@@ -1993,12 +2022,7 @@ class App:
         self.ca_entry.configure(state="normal")
         self.stop_btn.configure(state="disabled")
 
-    def check_bundles(self):
-        ca = self.ca_entry.get().strip()
-        if not ca:
-            self.status_var.set(self.tr.t("status_enter_ca"))
-            return
-
+    def start_bundle_check(self, ca):
         if self._bundle_stop_event:
             self._bundle_stop_event.set()  # прерываем предыдущую проверку, если ещё бежит
 
@@ -2006,9 +2030,7 @@ class App:
         bundle_stop_event = self._bundle_stop_event
         tr = self.tr
 
-        self.bundle_btn.configure(state="disabled")
-        self.status_var.set(tr.t("bundle_checking"))
-        self.append_log(tr.t("bundle_checking"), "info")
+        self.bundle_row_val.configure(text=tr.t("bundle_checking_short"), fg=MUTED)
 
         def worker():
             try:
@@ -2019,11 +2041,11 @@ class App:
         threading.Thread(target=worker, daemon=True).start()
 
     def show_bundle_result(self, data):
-        self.bundle_btn.configure(state="normal")
         t = self.tr.t
 
         if data.get("error"):
             self.append_log(data["error"], "error")
+            self.bundle_row_val.configure(text=t("bundle_row_na"), fg=MUTED)
             return
 
         self.append_log(f"— {t('bundle_result_title')} —", "info")
@@ -2035,6 +2057,8 @@ class App:
 
         if data.get("funder_unsupported"):
             self.append_log(t("bundle_funder_unsupported_note"), "info")
+            self.bundle_row_val.configure(
+                text=t("bundle_row_early_only", pct=data["early_pct"]), fg=TEXT)
         else:
             clusters = data.get("bundle_clusters") or {}
             if clusters:
@@ -2045,8 +2069,11 @@ class App:
                         t("bundle_result_cluster", n=len(info["wallets"]), funder=short_funder, pct=info["pct"]),
                         "error",
                     )
+                self.bundle_row_val.configure(
+                    text=t("bundle_row_bundled", pct=data["bundle_pct"]), fg=RED)
             else:
                 self.append_log(t("bundle_result_none"), "info")
+                self.bundle_row_val.configure(text=t("bundle_row_clean"), fg=GREEN)
 
         if data.get("truncated"):
             self.append_log(t("bundle_result_cap_note", n=25), "info")
