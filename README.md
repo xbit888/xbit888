@@ -75,21 +75,6 @@ Personal receiving addresses — not tied to any specific token contract.
 
 ---
 
-"Find the signal. Watch it live. Trust the tape, not the dashboard."
-
-[@xbit888](https://x.com/xbit888) · [github.com/xbit888](https://github.com/xbit888)
-XBIT888
-
-Read the tape. Build the tool. Ship it open.
-
-X XBIT888 watcher No custody
-
-📟 About me
-
-grok bot developer · @xbit888
-
-"No wallet, no keys, no execution — just the tape, live."
-
 I build small, single-purpose tools that watch the market instead of trusting someone else's dashboard: contract-address watchers, correlation arbitrage bots, and early-momentum token scanners. Everything runs local, reads public data only, and ships with dry-run first.
 
 Currently building XBIT888: a live buy/sell tracker for any token, by contract address, across chains.
