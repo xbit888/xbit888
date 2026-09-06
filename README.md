@@ -1,3 +1,5 @@
+![xbit888 banner](image.jpg)
+
 # XBIT888
 
 **Read the tape. Build the tool. Ship it open.**
@@ -23,6 +25,7 @@ I build small, single-purpose tools that watch the market instead of trusting so
 ![asyncio](https://img.shields.io/badge/asyncio%20%2F%20aiohttp-000000?style=for-the-badge&logo=python&logoColor=39ff14)
 ![Solana](https://img.shields.io/badge/Solana-000000?style=for-the-badge&logo=solana&logoColor=39ff14)
 ![Ethereum](https://img.shields.io/badge/EVM%20%2F%20Uniswap-000000?style=for-the-badge&logo=ethereum&logoColor=ff3b30)
+![Robinhood Chain](https://img.shields.io/badge/Robinhood_Chain-000000?style=for-the-badge&logoColor=39ff14)
 
 ### 🛠 What I work on
 
