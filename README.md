@@ -23,7 +23,6 @@ I build small, single-purpose tools that watch the market instead of trusting so
 ![asyncio](https://img.shields.io/badge/asyncio%20%2F%20aiohttp-000000?style=for-the-badge&logo=python&logoColor=39ff14)
 ![Solana](https://img.shields.io/badge/Solana-000000?style=for-the-badge&logo=solana&logoColor=39ff14)
 ![Ethereum](https://img.shields.io/badge/EVM%20%2F%20Uniswap-000000?style=for-the-badge&logo=ethereum&logoColor=ff3b30)
-![TON](https://img.shields.io/badge/TON-000000?style=for-the-badge&logoColor=39ff14)
 
 ### 🛠 What I work on
 
@@ -54,10 +53,7 @@ Requires Python 3.10+ — standard library only (`tkinter`). Double-click the fi
 
 ### 🤖 Other builds
 
-| Project | What it is |
-| --- | --- |
-| **FlipperPro** | MEXC futures correlation arbitrage bot — Binance as the reference feed, zero-maker-fee MEXC auth, multi-account, auto-sizing, 130+ pairs, halts itself if fee status changes. |
-| **TON runner detector** | Async scanner across STON.fi and DeDust for early-momentum TON tokens — volume spikes, liquidity growth, anti-scam filters. |
+**FlipperPro** — MEXC futures correlation arbitrage bot. Binance as the reference feed, zero-maker-fee MEXC auth, multi-account, auto-sizing, 130+ pairs, halts itself if fee status changes.
 
 ### 👛 My wallets
 
@@ -75,6 +71,6 @@ Personal receiving addresses — not tied to any specific token contract.
 
 ---
 
-I build small, single-purpose tools that watch the market instead of trusting someone else's dashboard: contract-address watchers, correlation arbitrage bots, and early-momentum token scanners. Everything runs local, reads public data only, and ships with dry-run first.
+"Find the signal. Watch it live. Trust the tape, not the dashboard."
 
-Currently building XBIT888: a live buy/sell tracker for any token, by contract address, across chains.
+[@xbit888](https://x.com/xbit888) · [github.com/xbit888](https://github.com/xbit888)
