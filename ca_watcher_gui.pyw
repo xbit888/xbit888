@@ -176,6 +176,21 @@ DEFAULT_EVM_RPCS = {
 }
 
 DEFAULT_SOLANA_RPC = "https://api.mainnet-beta.solana.com"
+
+CHAIN_DISPLAY_NAMES = {
+    "ethereum": "Ethereum", "bsc": "BSC", "base": "Base", "arbitrum": "Arbitrum",
+    "polygon": "Polygon", "avalanche": "Avalanche", "optimism": "Optimism",
+    "robinhood": "Robinhood", "solana": "Solana",
+}
+
+
+def chain_display_name(chain_id):
+    chain_id = (chain_id or "").lower()
+    return CHAIN_DISPLAY_NAMES.get(chain_id, chain_id.capitalize())
+
+
+def dex_display_name(dex_id):
+    return (dex_id or "").capitalize()
 PUMPFUN_COIN_URL = "https://frontend-api-v3.pump.fun/coins/{}"
 PUMP_PROGRAM_ID = "6EF8rrecthR5Dkzon8Nwu78hRvfCKubJ14M5uBEwF6P"
 
@@ -754,7 +769,7 @@ def run_watch(ca, interval, emit, stop_event, tr):
 
     emit("meta", {
         "name": base.get("name"), "symbol": base.get("symbol"),
-        "network": info["chainId"], "dex": info["dexId"],
+        "network": chain_display_name(info["chainId"]), "dex": dex_display_name(info["dexId"]),
         "price": f"${info['priceUsd']}" if info.get("priceUsd") else "",
         "liquidity": f"${info['liquidityUsd']:,.0f}" if info.get("liquidityUsd") else "",
         "mcap_anchor": mcap_anchor, "mcap_unit": "$", "mcap_unit_is_prefix": True,
@@ -791,8 +806,8 @@ PANEL2 = "#171b24"
 BORDER = "#232733"
 TEXT = "#e8e9ed"
 MUTED = "#7d8493"
-ACCENT = "#7c5cff"
-ACCENT_HOVER = "#9075ff"
+ACCENT = "#00d9ff"
+ACCENT_HOVER = "#4de6ff"
 GREEN = "#16c784"
 GREEN_DIM = "#0f6b48"
 RED = "#f6465d"
@@ -874,8 +889,8 @@ class App:
 
         style.configure("Accent.TButton", background=ACCENT, foreground="#ffffff",
                          font=("Segoe UI", 10, "bold"), padding=(14, 8), borderwidth=0)
-        style.map("Accent.TButton", background=[("active", ACCENT_HOVER), ("disabled", "#3a3550")],
-                  foreground=[("disabled", "#8a86a0")])
+        style.map("Accent.TButton", background=[("active", ACCENT_HOVER), ("disabled", "#123a44")],
+                  foreground=[("disabled", "#5a8a95")])
 
         style.configure("Stop.TButton", background=PANEL2, foreground=RED,
                          font=("Segoe UI", 10, "bold"), padding=(14, 8), borderwidth=1)
@@ -895,7 +910,7 @@ class App:
         style.configure("Treeview.Heading", background=PANEL2, foreground=MUTED,
                          font=("Segoe UI", 9, "bold"), borderwidth=0, relief="flat")
         style.map("Treeview.Heading", background=[("active", PANEL2)])
-        style.map("Treeview", background=[("selected", "#221f33")], foreground=[("selected", TEXT)])
+        style.map("Treeview", background=[("selected", "#0f2933")], foreground=[("selected", TEXT)])
 
         style.configure("Vertical.TScrollbar", background=PANEL2, troughcolor=BG, bordercolor=BG,
                          arrowcolor=MUTED)
@@ -911,7 +926,7 @@ class App:
         brand_row = tk.Frame(brand_box, bg=BG)
         brand_row.pack(anchor="w")
         tk.Label(brand_row, text="XBIT", bg=BG, fg=TEXT, font=("Consolas", 20, "bold")).pack(side="left")
-        tk.Label(brand_row, text="888", bg=BG, fg=GREEN, font=("Consolas", 20, "bold")).pack(side="left")
+        tk.Label(brand_row, text="888", bg=BG, fg=ACCENT, font=("Consolas", 20, "bold")).pack(side="left")
         self.subtitle_lbl = tk.Label(brand_box, bg=BG, fg=MUTED, font=("Segoe UI", 9), anchor="w")
         self.subtitle_lbl.pack(anchor="w")
 
