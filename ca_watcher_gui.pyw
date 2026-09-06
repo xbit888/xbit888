@@ -600,6 +600,26 @@ def find_uniswap_v4_pool_manager(rpc_url, token_address, lookback_blocks=100000,
     return None
 
 
+def _resolve_wallet_async(rpc_url, chain_id, tx_hash, emit):
+    """Резолвит адрес кошелька в фоновом потоке, не задерживая live-ленту/цену/MCAP."""
+    def worker():
+        wallet = "?"
+        for _ in range(2):
+            try:
+                tx = evm_rpc_call(rpc_url, "eth_getTransactionByHash", [tx_hash])
+                if tx and tx.get("from"):
+                    wallet = tx["from"]
+                break
+            except Exception:
+                time.sleep(0.3)
+        emit("wallet_update", {
+            "tx": tx_hash, "wallet": wallet,
+            "wallet_url": explorer_address_url(chain_id, wallet) if wallet != "?" else "",
+        })
+
+    threading.Thread(target=worker, daemon=True).start()
+
+
 def watch_evm_v4(ca, chain_id, pool_manager, pool_id, quote_token_address, quote_symbol,
                   rpc_url, interval, emit, stop_event, tr):
     emit("info", tr.t("log_watching_v4", addr=pool_id))
@@ -654,25 +674,21 @@ def watch_evm_v4(ca, chain_id, pool_manager, pool_id, quote_token_address, quote
                 token_amount = abs(our_amount) / (10 ** decimals)
                 quote_amount = abs(quote_amount_raw) / (10 ** quote_decimals)
 
-                wallet = "?"
-                for _ in range(3):
-                    try:
-                        tx = evm_rpc_call(rpc_url, "eth_getTransactionByHash", [lg["transactionHash"]])
-                        if tx and tx.get("from"):
-                            wallet = tx["from"]
-                        break
-                    except Exception:
-                        time.sleep(0.5)
-
+                # Кошелёк требует ОТДЕЛЬНОГО RPC-запроса (eth_getTransactionByHash) —
+                # в отличие от цены/суммы, которые уже есть прямо в логе. Раньше мы
+                # ждали этот запрос (+ретраи с паузой) ПЕРЕД тем как показать сделку,
+                # из-за чего цена/MCAP на экране отставали от реальной. Теперь сделка
+                # показывается сразу, а кошелёк подтягивается в фоне и дополняется.
                 tx_hash = lg["transactionHash"]
                 emit("trade", {
-                    "time": time.strftime("%H:%M:%S"), "is_buy": is_buy, "wallet": wallet,
-                    "wallet_url": explorer_address_url(chain_id, wallet),
+                    "time": time.strftime("%H:%M:%S"), "is_buy": is_buy, "wallet": "…",
+                    "wallet_url": "",
                     "amount": f"{token_amount:,.4f}", "amount_raw": token_amount,
                     "quote_amount": f"{quote_amount:,.4f}", "quote_amount_raw": quote_amount,
                     "quote_symbol": quote_symbol,
                     "tx": tx_hash, "tx_url": explorer_tx_url(chain_id, tx_hash),
                 })
+                _resolve_wallet_async(rpc_url, chain_id, tx_hash, emit)
 
             last_block = latest
         stop_event.wait(interval)
@@ -986,6 +1002,7 @@ class App:
 
         self._row_count = 0
         self._row_data = {}  # iid -> {"wallet_url":..., "wallet":..., "tx_url":...}
+        self._tx_to_row = {}  # tx hash -> iid, для фонового дозаполнения кошелька
 
     def _header_stat(self, parent, color, last=False):
         box = tk.Frame(parent, bg=BG)
@@ -1208,6 +1225,8 @@ class App:
                     self.update_meta(payload)
                 elif kind == "trade":
                     self.add_trade_row(payload)
+                elif kind == "wallet_update":
+                    self.update_trade_wallet(payload)
                 elif kind in ("info", "error"):
                     self.status_var.set(str(payload))
                     self.append_log(str(payload), kind)
@@ -1262,6 +1281,21 @@ class App:
         text = human_number(value)
         return f"{self.mcap_unit}{text}" if self.mcap_unit_is_prefix else f"{text}{self.mcap_unit}"
 
+    def update_trade_wallet(self, data):
+        """Дозаполняет кошелёк, который резолвился в фоне отдельным запросом
+        (используется для Uniswap V4 — там кошелёк не лежит прямо в логе)."""
+        row_id = self._tx_to_row.get(data.get("tx"))
+        if not row_id or not self.tree.exists(row_id):
+            return
+        wallet = data.get("wallet") or "?"
+        wallet_short = wallet if len(wallet) <= 20 else f"{wallet[:10]}…{wallet[-6:]}"
+        vals = list(self.tree.item(row_id, "values"))
+        vals[2] = wallet_short
+        self.tree.item(row_id, values=vals)
+        if row_id in self._row_data:
+            self._row_data[row_id]["wallet"] = wallet
+            self._row_data[row_id]["wallet_url"] = data.get("wallet_url") or wallet
+
     def add_trade_row(self, data):
         t = self.tr.t
         is_buy = data["is_buy"]
@@ -1287,13 +1321,16 @@ class App:
             "wallet_url": data.get("wallet_url") or wallet,
             "tx_url": data.get("tx_url") or data["tx"],
         }
+        self._tx_to_row[data["tx"]] = row_id
 
         # ограничиваем размер таблицы, чтобы GUI не разрастался бесконечно
         children = self.tree.get_children()
         if len(children) > 500:
-            for old_id in children[500:]:
+            removed_ids = set(children[500:])
+            for old_id in removed_ids:
                 self.tree.delete(old_id)
                 self._row_data.pop(old_id, None)
+            self._tx_to_row = {tx: rid for tx, rid in self._tx_to_row.items() if rid not in removed_ids}
 
         # -- живая статистика и график --
         amount_raw = data.get("amount_raw")
@@ -1416,6 +1453,7 @@ class App:
             self.tree.delete(row_id)
         self._row_count = 0
         self._row_data.clear()
+        self._tx_to_row.clear()
         self.clear_log()
 
         self.buy_count = 0
