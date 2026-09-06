@@ -120,6 +120,40 @@ TR = {
                               "zh": "代币已迁移到 DEX——请点击停止后重新开始。"},
     "log_unexpected_error": {"ru": "Неожиданная ошибка: {e}", "en": "Unexpected error: {e}", "zh": "发生意外错误：{e}"},
 
+    "check_bundles": {"ru": "🔍 Бандлы", "en": "🔍 Bundles", "zh": "🔍 捆绑检测"},
+    "bundle_checking": {"ru": "Проверяю бандлы...", "en": "Checking bundles...", "zh": "正在检测捆绑买入..."},
+    "bundle_scanning_launch": {"ru": "Ищу самые первые сделки после запуска токена...",
+                                "en": "Scanning the earliest trades after launch...",
+                                "zh": "正在扫描代币刚上线时的最早交易..."},
+    "bundle_no_history": {"ru": "Не удалось найти историю сделок для этого адреса.",
+                           "en": "Could not find trade history for this address.",
+                           "zh": "未能找到该地址的交易历史。"},
+    "bundle_no_early_buys": {"ru": "В окне запуска не найдено ни одной покупки.",
+                              "en": "No buys found in the launch window.",
+                              "zh": "在上线窗口内未发现任何买入。"},
+    "bundle_no_pair": {"ru": "Не удалось найти торговую пару для проверки бандлов.",
+                        "en": "Could not find a trading pair to check bundles.",
+                        "zh": "未能找到可用于检测捆绑买入的交易对。"},
+    "bundle_evm_unsupported": {"ru": "Проверка бандлов пока поддерживается только для Solana.",
+                                "en": "Bundle check currently supports Solana only.",
+                                "zh": "捆绑检测目前仅支持 Solana。"},
+    "bundle_result_title": {"ru": "Результат проверки бандлов", "en": "Bundle check result", "zh": "捆绑检测结果"},
+    "bundle_result_early": {"ru": "Скуплено в первые {window}с после запуска: {pct:.1f}% от предложения ({wallets} кошельков)",
+                             "en": "Bought within {window}s of launch: {pct:.1f}% of supply ({wallets} wallets)",
+                             "zh": "上线后 {window} 秒内买入：占供应量 {pct:.1f}%（{wallets} 个钱包）"},
+    "bundle_result_bundled": {"ru": "Из них похоже на бандл (общий кошелёк-раздатчик): {pct:.1f}% от предложения",
+                               "en": "Of that, looks bundled (shared funding wallet): {pct:.1f}% of supply",
+                               "zh": "其中疑似捆绑买入（共用同一资金来源钱包）：占供应量 {pct:.1f}%"},
+    "bundle_result_none": {"ru": "Признаков бандла (общего кошелька-раздатчика) не найдено — похоже на органические покупки.",
+                            "en": "No bundle signs found (no shared funding wallet) — looks organic.",
+                            "zh": "未发现捆绑迹象（没有共用资金来源钱包）——看起来是自然买入。"},
+    "bundle_result_cluster": {"ru": "  • {n} кошельков от {funder} — {pct:.1f}% от предложения",
+                               "en": "  • {n} wallets funded by {funder} — {pct:.1f}% of supply",
+                               "zh": "  • {n} 个钱包由 {funder} 提供资金 — 占供应量 {pct:.1f}%"},
+    "bundle_result_cap_note": {"ru": "(проверено только {n} крупнейших ранних кошельков)",
+                                "en": "(only the {n} largest early wallets were checked)",
+                                "zh": "（仅检查了最大的 {n} 个早期钱包）"},
+
     "live": {"ru": "LIVE", "en": "LIVE", "zh": "LIVE"},
     "offline": {"ru": "ОСТАНОВЛЕНО", "en": "OFFLINE", "zh": "已停止"},
     "waiting": {"ru": "ожидание токена...", "en": "waiting for a token...", "zh": "等待代币..."},
@@ -420,10 +454,13 @@ def watch_pumpfun(mint, curve_pda, assoc_curve, rpc_url, interval, decimals, emi
 # Solana (DEX-пулы после миграции)
 # ---------------------------------------------------------------------------
 
-def solana_get_signatures(rpc_url, address, limit=25):
+def solana_get_signatures(rpc_url, address, limit=25, before=None):
+    params = {"limit": limit}
+    if before:
+        params["before"] = before
     payload = {
         "jsonrpc": "2.0", "id": 1, "method": "getSignaturesForAddress",
-        "params": [address, {"limit": limit}],
+        "params": [address, params],
     }
     return http_post_json(rpc_url, payload).get("result") or []
 
@@ -453,6 +490,210 @@ def solana_extract_buys(tx, mint, pool_owner_hint=None):
         if delta > 0 and owner and owner != pool_owner_hint:
             buys.append((owner, delta))
     return buys
+
+
+def solana_get_token_supply(rpc_url, mint):
+    payload = {"jsonrpc": "2.0", "id": 1, "method": "getTokenSupply", "params": [mint]}
+    result = http_post_json(rpc_url, payload).get("result")
+    value = (result or {}).get("value") or {}
+    return float(value.get("uiAmountString") or 0)
+
+
+def _get_transaction_with_retry(rpc_url, signature, tries=3):
+    """getTransaction с ретраями — публичный RPC часто отдаёт 429 под нагрузкой."""
+    for attempt in range(tries):
+        try:
+            return solana_get_transaction(rpc_url, signature)
+        except (urllib.error.URLError, TimeoutError, json.JSONDecodeError):
+            if attempt < tries - 1:
+                time.sleep(0.5 * (attempt + 1))
+    return None
+
+
+def find_early_signatures(rpc_url, address, window_seconds, max_pages=15, page_size=100):
+    """Пагинирует назад до самого начала истории адреса (или до потолка max_pages),
+    затем возвращает подписи из первых window_seconds после самой первой сделки —
+    то есть "окно запуска" токена."""
+    all_sigs = []
+    before = None
+    for _ in range(max_pages):
+        batch = solana_get_signatures(rpc_url, address, limit=page_size, before=before)
+        if not batch:
+            break
+        all_sigs.extend(batch)
+        before = batch[-1]["signature"]
+        if len(batch) < page_size:
+            break
+
+    if not all_sigs:
+        return [], None, False
+
+    all_sigs.sort(key=lambda s: s.get("blockTime") or 0)
+    launch_time = all_sigs[0].get("blockTime")
+    hit_cap = len(all_sigs) >= max_pages * page_size
+    early = [s for s in all_sigs if not s.get("err") and (s.get("blockTime") or 0) <= (launch_time or 0) + window_seconds]
+    return early, launch_time, hit_cap
+
+
+def find_wallet_funder(rpc_url, wallet, max_pages=5, page_size=100):
+    """Находит самую первую транзакцию кошелька и адрес, который его профинансировал
+    (system transfer, где destination == wallet). None, если не удалось определить."""
+    before = None
+    oldest_batch = None
+    for _ in range(max_pages):
+        batch = solana_get_signatures(rpc_url, wallet, limit=page_size, before=before)
+        if not batch:
+            break
+        oldest_batch = batch
+        before = batch[-1]["signature"]
+        if len(batch) < page_size:
+            break
+
+    if not oldest_batch:
+        return None
+    oldest_sig = oldest_batch[-1]["signature"]
+    tx = _get_transaction_with_retry(rpc_url, oldest_sig)
+    if not tx or not tx.get("meta"):
+        return None
+
+    for ix in tx["transaction"]["message"].get("instructions", []):
+        parsed = ix.get("parsed") or {}
+        if ix.get("program") == "system" and parsed.get("type") == "transfer":
+            info = parsed.get("info", {})
+            if info.get("destination") == wallet:
+                return info.get("source")
+    return None
+
+
+def check_pumpfun_bundles(mint, curve_pda, assoc_curve, decimals, total_supply, rpc_url,
+                           window_seconds, emit, tr, stop_event, max_wallets=25):
+    emit("info", tr.t("bundle_scanning_launch"))
+    early_sigs, launch_time, hit_cap = find_early_signatures(rpc_url, curve_pda, window_seconds)
+    if not early_sigs:
+        emit("bundle_result", {"error": tr.t("bundle_no_history")})
+        return
+
+    per_wallet = {}
+    for s in early_sigs:
+        if stop_event.is_set():
+            return
+        tx = _get_transaction_with_retry(rpc_url, s["signature"])
+        if not tx:
+            continue
+        trade = pumpfun_extract_trade(tx, curve_pda, assoc_curve, decimals)
+        if trade and trade["is_buy"]:
+            per_wallet[trade["wallet"]] = per_wallet.get(trade["wallet"], 0.0) + trade["token_amount"]
+        time.sleep(0.15)
+
+    _finish_bundle_check(per_wallet, total_supply, launch_time, hit_cap, window_seconds,
+                          rpc_url, emit, tr, stop_event, max_wallets)
+
+
+def check_solana_dex_bundles(mint, pair_address, decimals, total_supply, rpc_url,
+                              window_seconds, emit, tr, stop_event, max_wallets=25):
+    emit("info", tr.t("bundle_scanning_launch"))
+    early_sigs, launch_time, hit_cap = find_early_signatures(rpc_url, pair_address, window_seconds)
+    if not early_sigs:
+        emit("bundle_result", {"error": tr.t("bundle_no_history")})
+        return
+
+    per_wallet = {}
+    for s in early_sigs:
+        if stop_event.is_set():
+            return
+        tx = _get_transaction_with_retry(rpc_url, s["signature"])
+        if not tx:
+            continue
+        for owner, amount in solana_extract_buys(tx, mint, pool_owner_hint=pair_address):
+            per_wallet[owner] = per_wallet.get(owner, 0.0) + amount
+        time.sleep(0.15)
+
+    _finish_bundle_check(per_wallet, total_supply, launch_time, hit_cap, window_seconds,
+                          rpc_url, emit, tr, stop_event, max_wallets)
+
+
+def _finish_bundle_check(per_wallet, total_supply, launch_time, hit_cap, window_seconds,
+                          rpc_url, emit, tr, stop_event, max_wallets):
+    if not per_wallet:
+        emit("bundle_result", {"error": tr.t("bundle_no_early_buys")})
+        return
+
+    wallets_by_size = sorted(per_wallet.items(), key=lambda kv: kv[1], reverse=True)[:max_wallets]
+    truncated = len(per_wallet) > max_wallets
+
+    funders = {}
+    for wallet, _amount in wallets_by_size:
+        if stop_event.is_set():
+            return
+        funder = find_wallet_funder(rpc_url, wallet)
+        funders[wallet] = funder
+        time.sleep(0.2)  # не долбим публичный RPC подряд без пауз
+
+    clusters = {}
+    for wallet, funder in funders.items():
+        if funder:
+            clusters.setdefault(funder, []).append(wallet)
+    raw_clusters = {f: ws for f, ws in clusters.items() if len(ws) >= 2}
+
+    early_total = sum(per_wallet.values())
+    early_pct = (early_total / total_supply * 100) if total_supply else 0.0
+
+    bundle_clusters = {}
+    bundle_total = 0.0
+    for funder, wallets in raw_clusters.items():
+        cluster_amount = sum(per_wallet[w] for w in wallets)
+        bundle_total += cluster_amount
+        bundle_clusters[funder] = {
+            "wallets": wallets,
+            "amount": cluster_amount,
+            "pct": (cluster_amount / total_supply * 100) if total_supply else 0.0,
+        }
+    bundle_pct = (bundle_total / total_supply * 100) if total_supply else 0.0
+
+    emit("bundle_result", {
+        "early_pct": early_pct,
+        "bundle_pct": bundle_pct,
+        "early_wallets": len(per_wallet),
+        "bundle_clusters": bundle_clusters,
+        "window_seconds": window_seconds,
+        "hit_cap": hit_cap,
+        "truncated": truncated,
+    })
+
+
+def run_bundle_check(ca, emit, tr, stop_event, window_seconds=60):
+    ca = ca.strip()
+    fmt = detect_chain_by_format(ca)
+    if fmt != "solana":
+        emit("bundle_result", {"error": tr.t("bundle_evm_unsupported")})
+        return
+
+    pf_info = fetch_pumpfun_info(ca)
+    rpc_url = DEFAULT_SOLANA_RPC
+    if pf_info and verify_pumpfun_curve(rpc_url, pf_info["bonding_curve"]):
+        decimals = pf_info.get("base_decimals", 6)
+        total_supply = (pf_info.get("total_supply") or 0) / (10 ** decimals)
+        if not pf_info.get("complete"):
+            check_pumpfun_bundles(ca, pf_info["bonding_curve"], pf_info["associated_bonding_curve"],
+                                  decimals, total_supply, rpc_url, window_seconds, emit, tr, stop_event)
+            return
+        # мигрировал на DEX — тот же принцип, но по пулу
+        info = fetch_dexscreener_info(ca)
+        if info and info.get("pairAddress") and (info.get("chainId") or "").lower() == "solana":
+            check_solana_dex_bundles(ca, info["pairAddress"], decimals, total_supply, rpc_url,
+                                      window_seconds, emit, tr, stop_event)
+            return
+
+    info = fetch_dexscreener_info(ca)
+    if not info or not info.get("pairAddress") or (info.get("chainId") or "").lower() != "solana":
+        emit("bundle_result", {"error": tr.t("bundle_no_pair")})
+        return
+    try:
+        total_supply = solana_get_token_supply(rpc_url, ca)
+    except Exception:
+        total_supply = 0
+    check_solana_dex_bundles(ca, info["pairAddress"], 0, total_supply, rpc_url,
+                              window_seconds, emit, tr, stop_event)
 
 
 def watch_solana(ca, pair_address, rpc_url, interval, emit, stop_event, tr):
@@ -843,6 +1084,7 @@ class App:
 
         self.log_queue = queue.Queue()
         self.stop_event = None
+        self._bundle_stop_event = None
         self.worker = None
         self.meta_widgets = {}
 
@@ -987,6 +1229,8 @@ class App:
         self.stop_btn.pack(side="left", padx=6)
         self.clear_btn = ttk.Button(btn_col, style="Ghost.TButton", command=self.clear)
         self.clear_btn.pack(side="left")
+        self.bundle_btn = ttk.Button(btn_col, style="Ghost.TButton", command=self.check_bundles)
+        self.bundle_btn.pack(side="left", padx=(6, 0))
 
         # ---- тело: три колонки ----
         body = ttk.Frame(self.root, padding=(18, 0, 18, 8))
@@ -1180,6 +1424,7 @@ class App:
         self.start_btn.configure(text=t("start"))
         self.stop_btn.configure(text=t("stop"))
         self.clear_btn.configure(text=t("clear"))
+        self.bundle_btn.configure(text=t("check_bundles"))
         self.status_var.set(t("status_ready") if not self.worker else t("status_running"))
 
         self.live_lbl.configure(text=t("live") if self._live_on else t("offline"))
@@ -1242,6 +1487,8 @@ class App:
                     self.add_trade_row(payload)
                 elif kind == "wallet_update":
                     self.update_trade_wallet(payload)
+                elif kind == "bundle_result":
+                    self.show_bundle_result(payload)
                 elif kind in ("info", "error"):
                     self.status_var.set(str(payload))
                     self.append_log(str(payload), kind)
@@ -1541,9 +1788,66 @@ class App:
         self.ca_entry.configure(state="normal")
         self.stop_btn.configure(state="disabled")
 
+    def check_bundles(self):
+        ca = self.ca_entry.get().strip()
+        if not ca:
+            self.status_var.set(self.tr.t("status_enter_ca"))
+            return
+
+        if self._bundle_stop_event:
+            self._bundle_stop_event.set()  # прерываем предыдущую проверку, если ещё бежит
+
+        self._bundle_stop_event = threading.Event()
+        bundle_stop_event = self._bundle_stop_event
+        tr = self.tr
+
+        self.bundle_btn.configure(state="disabled")
+        self.status_var.set(tr.t("bundle_checking"))
+        self.append_log(tr.t("bundle_checking"), "info")
+
+        def worker():
+            try:
+                run_bundle_check(ca, self.emit, tr, bundle_stop_event)
+            except Exception as e:
+                self.emit("bundle_result", {"error": tr.t("log_unexpected_error", e=e)})
+
+        threading.Thread(target=worker, daemon=True).start()
+
+    def show_bundle_result(self, data):
+        self.bundle_btn.configure(state="normal")
+        t = self.tr.t
+
+        if data.get("error"):
+            self.append_log(data["error"], "error")
+            return
+
+        self.append_log(f"— {t('bundle_result_title')} —", "info")
+        self.append_log(
+            t("bundle_result_early", window=data["window_seconds"],
+              pct=data["early_pct"], wallets=data["early_wallets"]),
+            "info",
+        )
+
+        clusters = data.get("bundle_clusters") or {}
+        if clusters:
+            self.append_log(t("bundle_result_bundled", pct=data["bundle_pct"]), "error")
+            for funder, info in sorted(clusters.items(), key=lambda kv: kv[1]["amount"], reverse=True):
+                short_funder = funder if len(funder) <= 14 else f"{funder[:6]}…{funder[-4:]}"
+                self.append_log(
+                    t("bundle_result_cluster", n=len(info["wallets"]), funder=short_funder, pct=info["pct"]),
+                    "error",
+                )
+        else:
+            self.append_log(t("bundle_result_none"), "info")
+
+        if data.get("truncated"):
+            self.append_log(t("bundle_result_cap_note", n=25), "info")
+
     def on_close(self):
         if self.stop_event:
             self.stop_event.set()
+        if self._bundle_stop_event:
+            self._bundle_stop_event.set()
         self.root.destroy()
 
 
