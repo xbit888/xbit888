@@ -153,6 +153,10 @@ TR = {
     "bundle_result_cap_note": {"ru": "(проверено только {n} крупнейших ранних кошельков)",
                                 "en": "(only the {n} largest early wallets were checked)",
                                 "zh": "（仅检查了最大的 {n} 个早期钱包）"},
+    "bundle_funder_unsupported_note": {
+        "ru": "Проверка общего кошелька-раздатчика для этой сети пока не поддерживается — показан только % ранних покупок.",
+        "en": "Shared-funder check isn't supported for this network yet — showing early-buy % only.",
+        "zh": "该网络暂不支持共用资金来源检测——仅显示早期买入占比。"},
 
     "live": {"ru": "LIVE", "en": "LIVE", "zh": "LIVE"},
     "offline": {"ru": "ОСТАНОВЛЕНО", "en": "OFFLINE", "zh": "已停止"},
@@ -308,6 +312,7 @@ def fetch_dexscreener_info(ca):
         "priceNative": best.get("priceNative"),
         "liquidityUsd": (best.get("liquidity") or {}).get("usd"),
         "marketCapUsd": best.get("marketCap") or best.get("fdv"),
+        "pairCreatedAt": best.get("pairCreatedAt"),
         "url": best.get("url"),
     }
 
@@ -586,7 +591,7 @@ def check_pumpfun_bundles(mint, curve_pda, assoc_curve, decimals, total_supply, 
         time.sleep(0.15)
 
     _finish_bundle_check(per_wallet, total_supply, launch_time, hit_cap, window_seconds,
-                          rpc_url, emit, tr, stop_event, max_wallets)
+                          lambda w: find_wallet_funder(rpc_url, w), emit, tr, stop_event, max_wallets)
 
 
 def check_solana_dex_bundles(mint, pair_address, decimals, total_supply, rpc_url,
@@ -609,11 +614,11 @@ def check_solana_dex_bundles(mint, pair_address, decimals, total_supply, rpc_url
         time.sleep(0.15)
 
     _finish_bundle_check(per_wallet, total_supply, launch_time, hit_cap, window_seconds,
-                          rpc_url, emit, tr, stop_event, max_wallets)
+                          lambda w: find_wallet_funder(rpc_url, w), emit, tr, stop_event, max_wallets)
 
 
 def _finish_bundle_check(per_wallet, total_supply, launch_time, hit_cap, window_seconds,
-                          rpc_url, emit, tr, stop_event, max_wallets):
+                          funder_fn, emit, tr, stop_event, max_wallets, funder_unsupported=False):
     if not per_wallet:
         emit("bundle_result", {"error": tr.t("bundle_no_early_buys")})
         return
@@ -622,12 +627,12 @@ def _finish_bundle_check(per_wallet, total_supply, launch_time, hit_cap, window_
     truncated = len(per_wallet) > max_wallets
 
     funders = {}
-    for wallet, _amount in wallets_by_size:
-        if stop_event.is_set():
-            return
-        funder = find_wallet_funder(rpc_url, wallet)
-        funders[wallet] = funder
-        time.sleep(0.2)  # не долбим публичный RPC подряд без пауз
+    if not funder_unsupported:
+        for wallet, _amount in wallets_by_size:
+            if stop_event.is_set():
+                return
+            funders[wallet] = funder_fn(wallet)
+            time.sleep(0.2)  # не долбим публичный RPC/API подряд без пауз
 
     clusters = {}
     for wallet, funder in funders.items():
@@ -658,12 +663,197 @@ def _finish_bundle_check(per_wallet, total_supply, launch_time, hit_cap, window_
         "window_seconds": window_seconds,
         "hit_cap": hit_cap,
         "truncated": truncated,
+        "funder_unsupported": funder_unsupported,
     })
+
+
+BLOCKSCOUT_API_BASE = {
+    "robinhood": "https://robinhoodchain.blockscout.com",
+}
+
+BLOCKSCOUT_HEADERS = {
+    "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) ca-watcher/1.0",
+    "Accept": "application/json",
+}
+
+
+def evm_find_wallet_funder(chain_id, wallet, max_pages=4):
+    """Ищет самую первую входящую нативную транзакцию кошелька через Blockscout API
+    (для сетей, где такой обозреватель есть — например Robinhood). Без него у EVM
+    нет дешёвого способа перечислить историю кошелька, поэтому для остальных сетей
+    эта проверка просто не выполняется (см. funder_unsupported)."""
+    base_url = BLOCKSCOUT_API_BASE.get(chain_id)
+    if not base_url:
+        return None
+
+    from urllib.parse import urlencode
+    next_params = None
+    oldest = None
+    for _ in range(max_pages):
+        url = f"{base_url}/api/v2/addresses/{wallet}/transactions"
+        if next_params:
+            url += "?" + urlencode(next_params)
+        try:
+            req = urllib.request.Request(url, headers=BLOCKSCOUT_HEADERS)
+            with urllib.request.urlopen(req, timeout=15) as resp:
+                data = json.loads(resp.read().decode("utf-8"))
+        except Exception:
+            break
+        items = data.get("items") or []
+        if items:
+            oldest = items[-1]
+        next_params = data.get("next_page_params")
+        if not next_params:
+            break
+
+    if not oldest:
+        return None
+    try:
+        value = int(oldest.get("value") or 0)
+    except (TypeError, ValueError):
+        value = 0
+    to_addr = (oldest.get("to") or {}).get("hash") or ""
+    from_addr = (oldest.get("from") or {}).get("hash")
+    if value > 0 and to_addr.lower() == wallet.lower():
+        return from_addr
+    return None
+
+
+def evm_estimate_block_by_timestamp(rpc_url, target_ts):
+    """Прикидывает номер блока по unix-таймстампу через среднее время блока —
+    у EVM нет прямого способа спросить RPC 'какой блок был в момент X'."""
+    latest = int(evm_rpc_call(rpc_url, "eth_blockNumber", []), 16)
+    latest_block = evm_rpc_call(rpc_url, "eth_getBlockByNumber", [hex(latest), False])
+    latest_ts = int(latest_block["timestamp"], 16)
+
+    ref_num = max(0, latest - 200000)
+    ref_block = evm_rpc_call(rpc_url, "eth_getBlockByNumber", [hex(ref_num), False])
+    ref_ts = int(ref_block["timestamp"], 16)
+
+    span_blocks = latest - ref_num
+    span_time = latest_ts - ref_ts
+    block_time = (span_time / span_blocks) if span_blocks > 0 and span_time > 0 else 2.0
+
+    estimated = int(latest - (latest_ts - target_ts) / block_time)
+    return max(0, min(estimated, latest)), block_time, latest
+
+
+def _scan_evm_logs(rpc_url, address, topics, start_block, window_seconds, block_time,
+                    latest_block, max_chunk=3000, max_chunks=10, stop_event=None):
+    end_block = min(latest_block, start_block + int(window_seconds / block_time * 2) + max_chunk)
+    cur = max(0, start_block - 50)  # небольшой запас на неточность оценки блока
+    logs = []
+    chunks = 0
+    while cur <= end_block and chunks < max_chunks:
+        if stop_event is not None and stop_event.is_set():
+            break
+        to_block = min(cur + max_chunk, end_block)
+        try:
+            batch = evm_rpc_call(rpc_url, "eth_getLogs", [{
+                "address": address, "topics": topics,
+                "fromBlock": hex(cur), "toBlock": hex(to_block),
+            }])
+            logs.extend(batch or [])
+        except Exception:
+            pass
+        cur = to_block + 1
+        chunks += 1
+        time.sleep(0.15)
+    return logs
+
+
+def check_evm_bundles(ca, chain_id, info, rpc_url, window_seconds, emit, tr, stop_event, max_wallets=25):
+    emit("info", tr.t("bundle_scanning_launch"))
+
+    pair_address = info["pairAddress"]
+    created_at_ms = info.get("pairCreatedAt")
+    if not created_at_ms:
+        emit("bundle_result", {"error": tr.t("bundle_no_history")})
+        return
+    target_ts = created_at_ms / 1000
+
+    try:
+        decimals = evm_get_decimals(rpc_url, ca)
+    except Exception:
+        decimals = 18
+
+    total_supply = 0
+    try:
+        price_usd = float(info["priceUsd"]) if info.get("priceUsd") else None
+        mcap_usd = float(info["marketCapUsd"]) if info.get("marketCapUsd") else None
+        if price_usd and mcap_usd:
+            total_supply = mcap_usd / price_usd
+    except (TypeError, ValueError, ZeroDivisionError):
+        pass
+
+    try:
+        start_block, block_time, latest_block = evm_estimate_block_by_timestamp(rpc_url, target_ts)
+    except Exception as e:
+        emit("bundle_result", {"error": tr.t("log_block_number_error", e=e)})
+        return
+
+    per_wallet = {}
+
+    if len(pair_address) == 66:
+        pool_manager = find_uniswap_v4_pool_manager(rpc_url, ca)
+        if not pool_manager:
+            emit("bundle_result", {"error": tr.t("log_v4_poolmanager_not_found")})
+            return
+        quote_address = info["quoteToken"].get("address")
+        is_token0 = int(ca, 16) < int(quote_address, 16)
+
+        logs = _scan_evm_logs(rpc_url, pool_manager, [UNISWAP_V4_SWAP_TOPIC, pair_address],
+                               start_block, window_seconds, block_time, latest_block, stop_event=stop_event)
+        buys_by_tx = {}
+        for lg in logs:
+            amount0 = evm_word_signed(lg["data"], 0)
+            amount1 = evm_word_signed(lg["data"], 1)
+            our_amount = amount0 if is_token0 else amount1
+            if our_amount > 0:  # положительное = трейдер получает наш токен = покупка
+                buys_by_tx[lg["transactionHash"]] = our_amount / (10 ** decimals)
+
+        for tx_hash, amount in buys_by_tx.items():
+            if stop_event.is_set():
+                return
+            try:
+                tx = evm_rpc_call(rpc_url, "eth_getTransactionByHash", [tx_hash])
+                wallet = tx.get("from") if tx else None
+            except Exception:
+                wallet = None
+            if wallet:
+                per_wallet[wallet] = per_wallet.get(wallet, 0.0) + amount
+            time.sleep(0.15)
+    else:
+        pair_topic = evm_pad_address_topic(pair_address)
+        logs = _scan_evm_logs(rpc_url, ca, [TRANSFER_TOPIC], start_block, window_seconds,
+                               block_time, latest_block, stop_event=stop_event)
+        for lg in logs:
+            topics = lg.get("topics") or []
+            if len(topics) < 3 or topics[1].lower() != pair_topic.lower():
+                continue  # интересуют только переводы ИЗ пула трейдеру, т.е. покупки
+            wallet = evm_topic_to_address(topics[2])
+            amount = int(lg.get("data", "0x0"), 16) / (10 ** decimals)
+            per_wallet[wallet] = per_wallet.get(wallet, 0.0) + amount
+
+    funder_unsupported = chain_id not in BLOCKSCOUT_API_BASE
+    _finish_bundle_check(per_wallet, total_supply, int(target_ts), False, window_seconds,
+                          lambda w: evm_find_wallet_funder(chain_id, w), emit, tr, stop_event,
+                          max_wallets, funder_unsupported=funder_unsupported)
 
 
 def run_bundle_check(ca, emit, tr, stop_event, window_seconds=60):
     ca = ca.strip()
     fmt = detect_chain_by_format(ca)
+    if fmt == "evm":
+        emit("info", tr.t("bundle_checking"))
+        info = fetch_dexscreener_info(ca)
+        if not info or not info.get("pairAddress"):
+            emit("bundle_result", {"error": tr.t("bundle_no_pair")})
+            return
+        chain_id = (info.get("chainId") or "").lower()
+        rpc_url = DEFAULT_EVM_RPCS.get(chain_id, DEFAULT_EVM_RPCS["ethereum"])
+        check_evm_bundles(ca, chain_id, info, rpc_url, window_seconds, emit, tr, stop_event)
+        return
     if fmt != "solana":
         emit("bundle_result", {"error": tr.t("bundle_evm_unsupported")})
         return
@@ -825,16 +1015,31 @@ def watch_evm(ca, chain_id, pair_address, rpc_url, interval, emit, stop_event, t
         stop_event.wait(interval)
 
 
-def find_uniswap_v4_pool_manager(rpc_url, token_address, lookback_blocks=100000, max_checked=60):
+def find_uniswap_v4_pool_manager(rpc_url, token_address, lookback_blocks=100000, max_checked=60,
+                                  chunk_blocks=5000):
     try:
         latest = int(evm_rpc_call(rpc_url, "eth_blockNumber", []), 16)
-        from_block = hex(max(0, latest - lookback_blocks))
-        logs = evm_rpc_call(rpc_url, "eth_getLogs", [{
-            "address": token_address, "topics": [TRANSFER_TOPIC],
-            "fromBlock": from_block, "toBlock": "latest",
-        }])
     except Exception:
         return None
+
+    # сканируем чанками, а не одним широким запросом — на активных токенах один
+    # запрос за lookback_blocks легко упирается в лимит RPC на число логов (10000)
+    logs = []
+    floor = max(0, latest - lookback_blocks)
+    cur_to = latest
+    while cur_to > floor:
+        cur_from = max(floor, cur_to - chunk_blocks)
+        try:
+            batch = evm_rpc_call(rpc_url, "eth_getLogs", [{
+                "address": token_address, "topics": [TRANSFER_TOPIC],
+                "fromBlock": hex(cur_from), "toBlock": hex(cur_to),
+            }])
+            logs.extend(batch or [])
+        except Exception:
+            pass  # эту порцию пропускаем, но продолжаем сканировать дальше назад
+        cur_to = cur_from - 1
+        if len(logs) >= max_checked * 3:  # уже достаточно кандидатов, не тратим лимиты RPC зря
+            break
 
     seen_tx = set()
     checked = 0
@@ -1828,17 +2033,20 @@ class App:
             "info",
         )
 
-        clusters = data.get("bundle_clusters") or {}
-        if clusters:
-            self.append_log(t("bundle_result_bundled", pct=data["bundle_pct"]), "error")
-            for funder, info in sorted(clusters.items(), key=lambda kv: kv[1]["amount"], reverse=True):
-                short_funder = funder if len(funder) <= 14 else f"{funder[:6]}…{funder[-4:]}"
-                self.append_log(
-                    t("bundle_result_cluster", n=len(info["wallets"]), funder=short_funder, pct=info["pct"]),
-                    "error",
-                )
+        if data.get("funder_unsupported"):
+            self.append_log(t("bundle_funder_unsupported_note"), "info")
         else:
-            self.append_log(t("bundle_result_none"), "info")
+            clusters = data.get("bundle_clusters") or {}
+            if clusters:
+                self.append_log(t("bundle_result_bundled", pct=data["bundle_pct"]), "error")
+                for funder, info in sorted(clusters.items(), key=lambda kv: kv[1]["amount"], reverse=True):
+                    short_funder = funder if len(funder) <= 14 else f"{funder[:6]}…{funder[-4:]}"
+                    self.append_log(
+                        t("bundle_result_cluster", n=len(info["wallets"]), funder=short_funder, pct=info["pct"]),
+                        "error",
+                    )
+            else:
+                self.append_log(t("bundle_result_none"), "info")
 
         if data.get("truncated"):
             self.append_log(t("bundle_result_cap_note", n=25), "info")
