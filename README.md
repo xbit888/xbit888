@@ -6,7 +6,7 @@
 
 [![X](https://img.shields.io/badge/X-%40xbit888-000000?style=for-the-badge&logo=x&logoColor=39ff14)](https://x.com/xbit888)
 [![XBIT888 watcher](https://img.shields.io/badge/OPEN_SOURCE-XBIT888-000000?style=for-the-badge&logo=github&logoColor=39ff14)](https://github.com/xbit888/xbit888)
-[![No custody](https://img.shields.io/badge/CUSTODY-NONE-000000?style=for-the-badge&labelColor=000000&color=ff3b30)](#xbit888--live-ca-watcher)
+[![No custody](https://img.shields.io/badge/CUSTODY-NONE-000000?style=for-the-badge&labelColor=000000&color=ff3b30)](#xbit888--bundle-checker)
 
 ### 📟 About me
 
@@ -16,7 +16,7 @@ grok bot developer · [@xbit888](https://x.com/xbit888)
 
 I build small, single-purpose tools that watch the market instead of trusting someone else's dashboard: contract-address watchers, correlation arbitrage bots, and early-momentum token scanners. Everything runs local, reads public data only, and ships with dry-run first.
 
-**Currently building [XBIT888](#xbit888--live-ca-watcher): a live buy/sell tracker for any token, by contract address, across chains.**
+**Currently building [XBIT888](#xbit888--bundle-checker): a bundle checker — paste a token address and see which wallets bought the launch together.**
 
 ### 🧰 Project stack
 
@@ -31,23 +31,27 @@ I build small, single-purpose tools that watch the market instead of trusting so
 
 | Area | What it does |
 | --- | --- |
+| **Bundle detection** | Find the wallets that bought a launch in the same seconds, then trace them back to the wallet that funded all of them. |
 | **Market watchers** | Track live buy/sell flow, MCAP, and price for any token by contract address — no keys, read-only public data. |
 | **Arbitrage bots** | Correlate price feeds across exchanges and execute spread trades with fee-aware, auto-sizing logic. |
 | **Token discovery** | Scan new pools for early-momentum signals — volume spikes, liquidity growth, anti-scam filters. |
 | **Signal content** | Turn the tools and the trades into posts — the process behind the bots, not just the results. |
 
-### 📈 XBIT888 — live CA watcher
+### 🧬 XBIT888 — bundle checker
 
-**Drop a contract address in, watch the tape.** Dark trading-terminal interface, RU / EN / 中文.
+**Paste a contract address, see who bundled the launch.** Dark trading-terminal interface, RU / EN / 中文.
 
-- Auto-detects the network and data source from the CA alone: pump.fun bonding curves, DEX pools (Raydium / Orca / Uniswap V2-V3), Uniswap V4 — including Robinhood Chain
-- Live trade feed: time, side (BUY/SELL), wallet, amount in token and in quote currency
-- MCAP recalculated on every trade, plus a live price chart and session stats (buy/sell volume, net flow)
+- **Bundle analysis is the main screen**: every wallet that bought in the first 60 seconds after the pool opened, with its share of total supply
+- Wallets funded from the same source are grouped and highlighted together — that is one operator running many addresses, not organic demand
+- Headline numbers spelled out: % of supply taken by linked groups, % bought early overall, wallet count, group count
+- **No indexer required** — the pool, the launch block and the token identity are read straight from RPC, so tokens too fresh for Dexscreener (the ones you find on GMGN) still resolve
+- Auto-detects the network and data source from the CA alone: Uniswap V4 including Robinhood Chain, DEX pools (Raydium / Orca / Uniswap V2-V3), pump.fun bonding curves
+- Live tape underneath: 0.1s polling, gapless 1-second candles, MCAP recalculated on every trade
 - Double-click a wallet to copy the address, double-click a trade to open it in the block explorer
 - Public, free data sources only — no API keys, no wallet connection, no execution
 
 ```bash
-python ca_watcher_gui.pyw
+python xbit888-boundless.pyw
 ```
 
 Requires Python 3.10+ — standard library only (`tkinter`). Double-click the file directly if `.pyw` is associated with `pythonw.exe`.
