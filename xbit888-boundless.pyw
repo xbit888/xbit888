@@ -37,7 +37,9 @@ TR = {
     "app_title": {"ru": "XBIT888", "en": "XBIT888", "zh": "XBIT888"},
     "app_subtitle": {"ru": "live-трекер сделок по адресу токена", "en": "live token-trade watcher", "zh": "代币实时交易监控"},
     "ca_label": {"ru": "Адрес токена (CA)", "en": "Token address (CA)", "zh": "代币地址 (CA)"},
-    "ca_placeholder": {"ru": "Вставьте CA и нажмите Пуск", "en": "Paste CA and press Start", "zh": "粘贴代币地址并点击开始"},
+    "ca_placeholder": {"ru": "вставьте адрес токена с GMGN и нажмите Старт",
+                        "en": "paste a token address from GMGN and press Start",
+                        "zh": "粘贴 GMGN 上的代币地址后点击开始"},
     "interval_label": {"ru": "Интервал, с", "en": "Interval, s", "zh": "刷新间隔(秒)"},
     "rpc_label": {"ru": "Свой RPC (необязательно — снимает лимиты)",
                    "en": "Custom RPC (optional — lifts rate limits)",
@@ -148,6 +150,25 @@ TR = {
     "col_funder": {"ru": "Кошелёк-раздатчик", "en": "Funder wallet", "zh": "资金来源钱包"},
     "col_wallets": {"ru": "Кошельков", "en": "Wallets", "zh": "钱包数"},
     "col_supply_pct": {"ru": "% предложения", "en": "% of supply", "zh": "占供应量"},
+    "col_group": {"ru": "Группа", "en": "Group", "zh": "组"},
+    "col_buyer": {"ru": "Кошелёк покупателя", "en": "Buyer wallet", "zh": "买家钱包"},
+    "col_bought": {"ru": "Куплено", "en": "Bought", "zh": "买入量"},
+
+    "bundle_list_title": {"ru": "КТО КУПИЛ В ПЕРВЫЕ {w} СЕКУНД",
+                           "en": "WHO BOUGHT IN THE FIRST {w} SECONDS",
+                           "zh": "上线后 {w} 秒内的买家"},
+    "bundle_list_hint": {"ru": "двойной клик — скопировать кошелёк",
+                          "en": "double-click a row to copy the wallet",
+                          "zh": "双击行可复制钱包地址"},
+    "bundle_group_fmt": {"ru": "Г{n}", "en": "G{n}", "zh": "组{n}"},
+    "bundle_group_alone": {"ru": "—", "en": "—", "zh": "—"},
+    "bundle_funder_none": {"ru": "нет общего источника", "en": "no shared source", "zh": "无共用来源"},
+    "bundle_funder_skipped": {"ru": "не проверялся", "en": "not checked", "zh": "未检测"},
+    "bundle_stat_bundled": {"ru": "В БАНДЛЕ", "en": "BUNDLED", "zh": "捆绑占比"},
+    "bundle_stat_early": {"ru": "РАННИЕ ПОКУПКИ", "en": "EARLY BUYS", "zh": "早期买入"},
+    "bundle_stat_wallets": {"ru": "КОШЕЛЬКОВ", "en": "WALLETS", "zh": "钱包数"},
+    "bundle_stat_groups": {"ru": "ГРУПП", "en": "GROUPS", "zh": "组数"},
+    "bundle_stat_supply_hint": {"ru": "от предложения", "en": "of supply", "zh": "占供应量"},
     "bundle_window_fmt": {"ru": "окно запуска: {w}с", "en": "launch window: {w}s", "zh": "上线窗口：{w} 秒"},
     "bundle_verdict_checking": {"ru": "идёт проверка...", "en": "checking...", "zh": "检测中..."},
     "bundle_verdict_bundled": {"ru": "ПОХОЖЕ НА БАНДЛ", "en": "LOOKS BUNDLED", "zh": "疑似捆绑"},
@@ -159,9 +180,9 @@ TR = {
     "bundle_early_fmt": {"ru": "Ранние покупки: {pct:.1f}% предложения · {wallets} кошельков",
                           "en": "Early buys: {pct:.1f}% of supply · {wallets} wallets",
                           "zh": "早期买入：占供应量 {pct:.1f}% · {wallets} 个钱包"},
-    "bundle_table_idle": {"ru": "Здесь появятся группы связанных кошельков, если бандл найдётся",
-                           "en": "Groups of linked wallets will appear here if a bundle is found",
-                           "zh": "如果发现捆绑，关联钱包分组将显示在这里"},
+    "bundle_table_idle": {"ru": "Вставьте адрес токена и нажмите Старт — здесь появятся кошельки, купившие на запуске",
+                           "en": "Paste a token address and press Start — the wallets that bought at launch will appear here",
+                           "zh": "粘贴代币地址并点击开始——上线时买入的钱包会显示在这里"},
     "bundle_table_checking": {"ru": "Идёт проверка ранних покупателей...",
                                "en": "Checking early buyers...",
                                "zh": "正在检查早期买家..."},
@@ -192,9 +213,9 @@ TR = {
                            "en": "Could not find trade history for this address.",
                            "zh": "未能找到该地址的交易历史。"},
     "bundle_rpc_blocked": {
-        "ru": "Публичный RPC ограничил запросы — данные не дочитались. Вставьте свой RPC в поле сверху, и анализ пройдёт целиком.",
-        "en": "The public RPC rate-limited us, so the data couldn't be read in full. Paste your own RPC above and it will complete.",
-        "zh": "公共 RPC 触发频率限制，数据未能完整读取。请在上方填入自己的 RPC 后重试。"},
+        "ru": "Публичный RPC ограничил запросы — данные не дочитались. Нажмите Старт ещё раз через несколько секунд.",
+        "en": "The public RPC rate-limited us, so the data couldn't be read in full. Press Start again in a few seconds.",
+        "zh": "公共 RPC 触发频率限制，数据未能完整读取。请几秒后再次点击开始。"},
     "bundle_no_early_buys": {"ru": "В окне запуска не найдено ни одной покупки.",
                               "en": "No buys found in the launch window.",
                               "zh": "在上线窗口内未发现任何买入。"},
@@ -787,11 +808,32 @@ def _finish_bundle_check(per_wallet, total_supply, launch_time, hit_cap, window_
         }
     bundle_pct = (bundle_total / total_supply * 100) if total_supply else 0.0
 
+    # Главное, что человек хочет увидеть, — это сами кошельки, а не одна цифра.
+    # Поэтому отдаём полный список ранних покупателей: у сгруппированных проставлен
+    # номер группы, у остальных его нет, и сразу видно, кто с кем связан.
+    group_of_funder = {}
+    for idx, (funder, _c) in enumerate(
+            sorted(bundle_clusters.items(), key=lambda kv: kv[1]["amount"], reverse=True), start=1):
+        group_of_funder[funder] = idx
+
+    wallet_rows = []
+    for wallet, amount in sorted(per_wallet.items(), key=lambda kv: kv[1], reverse=True)[:200]:
+        funder = funders.get(wallet)
+        wallet_rows.append({
+            "wallet": wallet,
+            "amount": amount,
+            "pct": (amount / total_supply * 100) if total_supply else 0.0,
+            "funder": funder,
+            "group": group_of_funder.get(funder),
+            "checked": wallet in funders,
+        })
+
     emit("bundle_result", {
         "early_pct": early_pct,
         "bundle_pct": bundle_pct,
         "early_wallets": len(per_wallet),
         "bundle_clusters": bundle_clusters,
+        "wallet_rows": wallet_rows,
         "window_seconds": window_seconds,
         "hit_cap": hit_cap,
         "truncated": truncated,
@@ -1804,6 +1846,7 @@ class App:
         self.root.after(1000, self._tick_candles)
         self.root.protocol("WM_DELETE_WINDOW", self.on_close)
         self.retranslate()
+        self._show_ca_placeholder()
         self.clear_bundle_table("bundle_table_idle")  # пустая таблица сразу объясняет себя
 
     # -- style ---------------------------------------------------------
@@ -1828,17 +1871,20 @@ class App:
         style.map("TEntry", fieldbackground=[("readonly", PANEL2)])
 
         style.configure("Accent.TButton", background=ACCENT, foreground="#ffffff",
-                         font=("Segoe UI", 10, "bold"), padding=(14, 8), borderwidth=0)
+                         font=("Segoe UI", 10, "bold"), padding=(14, 8), borderwidth=0,
+                         focuscolor=ACCENT)
         style.map("Accent.TButton", background=[("active", ACCENT_HOVER), ("disabled", "#123a44")],
                   foreground=[("disabled", "#5a8a95")])
 
         style.configure("Stop.TButton", background=PANEL2, foreground=RED,
-                         font=("Segoe UI", 10, "bold"), padding=(14, 8), borderwidth=1)
+                         font=("Segoe UI", 10, "bold"), padding=(14, 8), borderwidth=1,
+                         bordercolor=BORDER, lightcolor=PANEL2, darkcolor=PANEL2, focuscolor=PANEL2)
         style.map("Stop.TButton", background=[("active", "#1e1420"), ("disabled", PANEL2)],
                   foreground=[("disabled", "#5a4247")])
 
         style.configure("Ghost.TButton", background=BG, foreground=MUTED,
-                         font=("Segoe UI", 9), padding=(10, 6), borderwidth=1)
+                         font=("Segoe UI", 9), padding=(10, 6), borderwidth=1,
+                         bordercolor=BORDER, lightcolor=BG, darkcolor=BG, focuscolor=BG)
         style.map("Ghost.TButton", background=[("active", PANEL)], foreground=[("active", TEXT)])
 
         style.configure("TCombobox", fieldbackground=PANEL2, background=PANEL2, foreground=TEXT,
@@ -1934,22 +1980,36 @@ class App:
         input_row = ttk.Frame(self.root, padding=(18, 10, 18, 10))
         input_row.pack(fill="x")
 
-        ca_col = ttk.Frame(input_row)
-        ca_col.pack(side="left", fill="x", expand=True)
-        self.ca_label_lbl = ttk.Label(ca_col, style="Muted.TLabel")
-        self.ca_label_lbl.pack(anchor="w")
-        self.ca_entry = ttk.Entry(ca_col, font=("Consolas", 11))
-        self.ca_entry.pack(fill="x", pady=(2, 0))
+        # поле ввода собрано вручную: ttk.Entry в теме clam рисует светлую рамку и
+        # выглядит чужеродно на тёмном фоне. Здесь — рамка в 1px, метка CA слева
+        # и подсказка прямо внутри поля, которая гаснет при вводе.
+        self.ca_border = tk.Frame(input_row, bg=BORDER)
+        self.ca_border.pack(side="left", fill="x", expand=True)
+        ca_inner = tk.Frame(self.ca_border, bg=PANEL2)
+        ca_inner.pack(fill="both", expand=True, padx=1, pady=1)
+
+        tk.Label(ca_inner, text="CA", bg=PANEL2, fg=ACCENT,
+                 font=("Consolas", 10, "bold"), padx=13).pack(side="left")
+        tk.Frame(ca_inner, bg=BORDER, width=1).pack(side="left", fill="y", pady=7)
+
+        self.ca_entry = tk.Entry(ca_inner, bg=PANEL2, fg=TEXT, insertbackground=ACCENT,
+                                  font=("Consolas", 11), relief="flat", bd=0,
+                                  highlightthickness=0, disabledbackground=PANEL2,
+                                  disabledforeground=MUTED)
+        self.ca_entry.pack(side="left", fill="both", expand=True, padx=12, pady=10)
         self.ca_entry.bind("<Return>", lambda e: self.start())
+        self.ca_entry.bind("<FocusIn>", self._on_ca_focus_in)
+        self.ca_entry.bind("<FocusOut>", self._on_ca_focus_out)
+        self._ca_placeholder_on = False
 
         btn_col = ttk.Frame(input_row)
-        btn_col.pack(side="left", padx=(12, 0), anchor="s")
+        btn_col.pack(side="left", padx=(12, 0), fill="y")
         self.start_btn = ttk.Button(btn_col, style="Accent.TButton", command=self.start)
-        self.start_btn.pack(side="left")
+        self.start_btn.pack(side="left", fill="y")
         self.stop_btn = ttk.Button(btn_col, style="Stop.TButton", command=self.stop, state="disabled")
-        self.stop_btn.pack(side="left", padx=6)
+        self.stop_btn.pack(side="left", padx=6, fill="y")
         self.clear_btn = ttk.Button(btn_col, style="Ghost.TButton", command=self.clear)
-        self.clear_btn.pack(side="left")
+        self.clear_btn.pack(side="left", fill="y")
 
         # ---- тело: три колонки ----
         body = ttk.Frame(self.root, padding=(18, 0, 18, 8))
@@ -1983,6 +2043,33 @@ class App:
         self._row_count = 0
         self._row_data = {}  # iid -> {"wallet_url":..., "wallet":..., "tx_url":...}
         self._tx_to_row = {}  # tx hash -> iid, для фонового дозаполнения кошелька
+
+    # -- поле ввода CA ---------------------------------------------------
+    def _show_ca_placeholder(self):
+        if str(self.ca_entry.cget("state")) == "disabled":
+            return
+        if not self.ca_entry.get():
+            self._ca_placeholder_on = True
+            self.ca_entry.insert(0, self.tr.t("ca_placeholder"))
+            self.ca_entry.configure(fg=MUTED)
+
+    def _hide_ca_placeholder(self):
+        if self._ca_placeholder_on:
+            self._ca_placeholder_on = False
+            self.ca_entry.delete(0, "end")
+            self.ca_entry.configure(fg=TEXT)
+
+    def _on_ca_focus_in(self, _event=None):
+        self._hide_ca_placeholder()
+        self.ca_border.configure(bg=ACCENT)  # рамка подсвечивается акцентом в фокусе
+
+    def _on_ca_focus_out(self, _event=None):
+        self.ca_border.configure(bg=BORDER)
+        self._show_ca_placeholder()
+
+    def ca_text(self):
+        """Текст поля без подсказки — иначе Старт принял бы её за адрес."""
+        return "" if self._ca_placeholder_on else self.ca_entry.get().strip()
 
     def _header_stat(self, parent, color, last=False):
         box = tk.Frame(parent, bg=BG)
@@ -2062,26 +2149,63 @@ class App:
         self.bundle_window_lbl = tk.Label(head, bg=PANEL, fg=MUTED, font=("Segoe UI", 8))
         self.bundle_window_lbl.pack(side="right")
 
-        self.bundle_big_val = tk.Label(pad, text="—", bg=PANEL, fg=TEXT,
-                                        font=("Consolas", 40, "bold"), anchor="w")
-        self.bundle_big_val.pack(anchor="w", pady=(12, 0))
-        self.bundle_verdict_lbl = tk.Label(pad, text="", bg=PANEL, fg=MUTED,
+        summary = tk.Frame(pad, bg=PANEL)
+        summary.pack(fill="x", pady=(10, 0))
+
+        big_box = tk.Frame(summary, bg=PANEL)
+        big_box.pack(side="left")
+        self.bundle_big_cap = tk.Label(big_box, bg=PANEL, fg=MUTED,
+                                        font=("Segoe UI", 8, "bold"), anchor="w")
+        self.bundle_big_cap.pack(anchor="w")
+        self.bundle_big_val = tk.Label(big_box, text="—", bg=PANEL, fg=TEXT,
+                                        font=("Consolas", 38, "bold"), anchor="w")
+        self.bundle_big_val.pack(anchor="w")
+        self.bundle_verdict_lbl = tk.Label(big_box, text="", bg=PANEL, fg=MUTED,
                                             font=("Segoe UI", 11, "bold"), anchor="w")
         self.bundle_verdict_lbl.pack(anchor="w")
-        self.bundle_early_lbl = tk.Label(pad, text="", bg=PANEL, fg=MUTED,
-                                          font=("Consolas", 9), anchor="w")
-        self.bundle_early_lbl.pack(anchor="w", pady=(8, 0))
+
+        # три подписанные цифры вместо одной строки текста: сразу понятно,
+        # что означает большое число слева и на чём оно построено
+        stats = tk.Frame(summary, bg=PANEL)
+        stats.pack(side="right", anchor="n", pady=(6, 0))
+        self.bundle_stats = {}
+        for key, color in (("bundle_stat_early", GOLD),
+                            ("bundle_stat_wallets", TEXT),
+                            ("bundle_stat_groups", ACCENT)):
+            box = tk.Frame(stats, bg=PANEL)
+            box.pack(side="left", padx=(26, 0))
+            val = tk.Label(box, text="—", bg=PANEL, fg=color,
+                            font=("Consolas", 17, "bold"), anchor="e")
+            val.pack(anchor="e")
+            cap = tk.Label(box, bg=PANEL, fg=MUTED, font=("Segoe UI", 8, "bold"), anchor="e")
+            cap.pack(anchor="e")
+            self.bundle_stats[key] = (cap, val)
 
         tk.Frame(pad, bg=BORDER, height=1).pack(fill="x", pady=12)
 
+        list_head = tk.Frame(pad, bg=PANEL)
+        list_head.pack(fill="x", pady=(0, 6))
+        self.bundle_list_title = tk.Label(list_head, bg=PANEL, fg=TEXT,
+                                           font=("Segoe UI", 8, "bold"))
+        self.bundle_list_title.pack(side="left")
+        self.bundle_list_hint = tk.Label(list_head, bg=PANEL, fg=MUTED, font=("Segoe UI", 8))
+        self.bundle_list_hint.pack(side="right")
+
         table_frame = tk.Frame(pad, bg=PANEL)
         table_frame.pack(fill="both", expand=True)
-        cols = ("funder", "wallets", "pct")
+        cols = ("group", "wallet", "pct", "amount", "funder")
         self.bundle_tree = ttk.Treeview(table_frame, columns=cols, show="headings", style="Treeview")
-        self.bundle_tree.column("funder", width=240, anchor="w", stretch=True)
-        self.bundle_tree.column("wallets", width=90, anchor="center", stretch=False)
-        self.bundle_tree.column("pct", width=120, anchor="e", stretch=False)
-        self.bundle_tree.tag_configure("bundle", foreground=RED, background="#2a1116")
+        self.bundle_tree.column("group", width=58, anchor="center", stretch=False)
+        self.bundle_tree.column("wallet", width=210, anchor="w", stretch=True)
+        self.bundle_tree.column("pct", width=100, anchor="e", stretch=False)
+        self.bundle_tree.column("amount", width=130, anchor="e", stretch=False)
+        self.bundle_tree.column("funder", width=190, anchor="w", stretch=False)
+        # кошельки одной группы подсвечены одинаково, соседние группы — разными
+        # оттенками, чтобы связка читалась глазом, а не только по номеру
+        for idx, bg_color in enumerate(("#2a1116", "#2b1a0f", "#251327", "#10262b"), start=1):
+            self.bundle_tree.tag_configure(f"g{idx}", foreground=RED, background=bg_color)
+        self.bundle_tree.tag_configure("solo", foreground=TEXT, background=PANEL)
+        self.bundle_tree.tag_configure("solo_alt", foreground=TEXT, background=PANEL2)
         self.bundle_tree.tag_configure("placeholder", foreground=MUTED)
         self.bundle_tree.bind("<Double-Button-1>", self.on_bundle_row_double_click)
         vsb = ttk.Scrollbar(table_frame, orient="vertical", command=self.bundle_tree.yview)
@@ -2090,6 +2214,7 @@ class App:
         vsb.pack(side="right", fill="y")
         self._bundle_row_data = {}
         self._bundle_placeholder_key = None
+        self._bundle_last_result = None
 
     def _build_bottom_strip(self):
         """Второстепенная полоса: компактный график цены + компактная лента сделок."""
@@ -2178,7 +2303,10 @@ class App:
         if not self.worker:
             self.subtitle_lbl.configure(text=t("app_subtitle"))
         self.lang_lbl.configure(text=t("lang_label"))
-        self.ca_label_lbl.configure(text=t("ca_label"))
+        if self._ca_placeholder_on:  # подсказка внутри поля тоже переводится
+            self._ca_placeholder_on = False
+            self.ca_entry.delete(0, "end")
+            self._show_ca_placeholder()
         self.start_btn.configure(text=t("start"))
         self.stop_btn.configure(text=t("stop"))
         self.clear_btn.configure(text=t("clear"))
@@ -2197,11 +2325,22 @@ class App:
         self.bundle_card_title.configure(text=t("card_bundle_analysis"))
         self.trades_title.configure(text=t("card_trades"))
         self.bundle_window_lbl.configure(text=t("bundle_window_fmt", w=BUNDLE_WINDOW_SECONDS))
-        self.bundle_tree.heading("funder", text=t("col_funder"))
-        self.bundle_tree.heading("wallets", text=t("col_wallets"))
-        self.bundle_tree.heading("pct", text=t("col_supply_pct"))
+        self.bundle_big_cap.configure(text=t("bundle_stat_bundled"))
+        self.bundle_list_title.configure(text=t("bundle_list_title", w=BUNDLE_WINDOW_SECONDS))
+        self.bundle_list_hint.configure(text=t("bundle_list_hint"))
+        for key, (cap, _val) in self.bundle_stats.items():
+            cap.configure(text=t(key))
+        # заголовки выравниваем по своим колонкам, иначе подпись висит по центру
+        # над прижатым влево содержимым
+        self.bundle_tree.heading("group", text=t("col_group"), anchor="center")
+        self.bundle_tree.heading("wallet", text=t("col_buyer"), anchor="w")
+        self.bundle_tree.heading("pct", text=t("col_supply_pct"), anchor="e")
+        self.bundle_tree.heading("amount", text=t("col_bought"), anchor="e")
+        self.bundle_tree.heading("funder", text=t("col_funder"), anchor="w")
         if self._bundle_placeholder_key:  # подсказка тоже должна переводиться
             self.clear_bundle_table(self._bundle_placeholder_key)
+        elif self._bundle_last_result:   # и сама таблица — тоже
+            self._render_bundle_rows(self._bundle_last_result)
         self.last_price_cap.configure(text=t("last_price_label"))
 
         self.tree.heading("time", text=t("col_time"))
@@ -2239,6 +2378,7 @@ class App:
                 if kind == "stopped":
                     self.start_btn.configure(state="normal")
                     self.ca_entry.configure(state="normal")
+                    self._show_ca_placeholder()
                     self.stop_btn.configure(state="disabled")
                     self.status_var.set(self.tr.t("status_stopped"))
                     self._live_on = False
@@ -2537,12 +2677,14 @@ class App:
         self.bundle_row_val.configure(text="—", fg=TEXT)
         self.bundle_big_val.configure(text="—", fg=TEXT)
         self.bundle_verdict_lbl.configure(text="", fg=MUTED)
-        self.bundle_early_lbl.configure(text="")
+        self._bundle_last_result = None
+        for key in self.bundle_stats:
+            self._set_bundle_stat(key, "—")
         self.clear_bundle_table("bundle_table_idle")
         self._redraw_candles()
 
     def start(self):
-        ca = self.ca_entry.get().strip()
+        ca = self.ca_text()
         if not ca:
             self.status_var.set(self.tr.t("status_enter_ca"))
             return
@@ -2594,6 +2736,7 @@ class App:
         self.status_var.set(self.tr.t("status_stopped"))
         self.start_btn.configure(state="normal")
         self.ca_entry.configure(state="normal")
+        self._show_ca_placeholder()
         self.stop_btn.configure(state="disabled")
 
     def start_bundle_check(self, ca, rpc_override=None):
@@ -2607,7 +2750,9 @@ class App:
         self.bundle_row_val.configure(text=tr.t("bundle_checking_short"), fg=MUTED)
         self.bundle_big_val.configure(text="…", fg=MUTED)
         self.bundle_verdict_lbl.configure(text=tr.t("bundle_verdict_checking"), fg=MUTED)
-        self.bundle_early_lbl.configure(text="")
+        self._bundle_last_result = None
+        for key in self.bundle_stats:
+            self._set_bundle_stat(key, "…")
         self.clear_bundle_table("bundle_table_checking")
 
         def worker():
@@ -2626,11 +2771,61 @@ class App:
         # поэтому всегда показываем строку-подсказку о текущем состоянии
         self._bundle_placeholder_key = placeholder_key
         if placeholder_key:
-            self.bundle_tree.insert("", "end", values=(self.tr.t(placeholder_key), "", ""),
+            self.bundle_tree.insert("", "end",
+                                     values=("", self.tr.t(placeholder_key), "", "", ""),
                                      tags=("placeholder",))
+
+    def _set_bundle_stat(self, key, text, color=None):
+        cap, val = self.bundle_stats[key]
+        val.configure(text=text)
+        if color:
+            val.configure(fg=color)
+
+    def _render_bundle_rows(self, data):
+        """Рисует список ранних покупателей — это и есть главный ответ программы:
+        кто именно закупился на запуске и какие кошельки связаны между собой."""
+        t = self.tr.t
+        rows = data.get("wallet_rows") or []
+        if not rows:
+            self.clear_bundle_table("bundle_table_clean")
+            return
+
+        for row_id in self.bundle_tree.get_children():
+            self.bundle_tree.delete(row_id)
+        self._bundle_row_data.clear()
+        self._bundle_placeholder_key = None
+
+        solo_index = 0
+        for row in rows:
+            wallet = row["wallet"]
+            short_wallet = wallet if len(wallet) <= 22 else f"{wallet[:10]}…{wallet[-8:]}"
+            group = row.get("group")
+            funder = row.get("funder")
+            if group:
+                group_text = t("bundle_group_fmt", n=group)
+                tag = f"g{(group - 1) % 4 + 1}"
+            else:
+                group_text = t("bundle_group_alone")
+                tag = "solo" if solo_index % 2 == 0 else "solo_alt"
+                solo_index += 1
+            if funder:
+                funder_text = funder if len(funder) <= 20 else f"{funder[:8]}…{funder[-6:]}"
+            elif row.get("checked"):
+                funder_text = t("bundle_funder_none")
+            else:
+                funder_text = t("bundle_funder_skipped")
+
+            new_id = self.bundle_tree.insert(
+                "", "end",
+                values=(group_text, short_wallet, f"{row['pct']:.2f}%",
+                        human_number(row["amount"]), funder_text),
+                tags=(tag,),
+            )
+            self._bundle_row_data[new_id] = {"wallet": wallet, "funder": funder}
 
     def show_bundle_result(self, data):
         t = self.tr.t
+        self._bundle_last_result = None
         self.clear_bundle_table()
 
         if data.get("error"):
@@ -2638,7 +2833,8 @@ class App:
             self.bundle_row_val.configure(text=t("bundle_row_na"), fg=MUTED)
             self.bundle_big_val.configure(text="—", fg=MUTED)
             self.bundle_verdict_lbl.configure(text=t("bundle_verdict_na"), fg=MUTED)
-            self.bundle_early_lbl.configure(text=str(data["error"]))
+            for key in self.bundle_stats:
+                self._set_bundle_stat(key, "—")
             self.clear_bundle_table("bundle_table_idle")
             return
 
@@ -2648,8 +2844,15 @@ class App:
               pct=data["early_pct"], wallets=data["early_wallets"]),
             "info",
         )
-        self.bundle_early_lbl.configure(
-            text=t("bundle_early_fmt", pct=data["early_pct"], wallets=data["early_wallets"]))
+
+        clusters = data.get("bundle_clusters") or {}
+        self._set_bundle_stat("bundle_stat_early", f"{data['early_pct']:.1f}%")
+        self._set_bundle_stat("bundle_stat_wallets", str(data["early_wallets"]))
+        self._set_bundle_stat("bundle_stat_groups", str(len(clusters)),
+                              RED if clusters else ACCENT)
+
+        self._bundle_last_result = data
+        self._render_bundle_rows(data)
 
         if data.get("funder_unsupported"):
             self.append_log(t("bundle_funder_unsupported_note"), "info")
@@ -2657,35 +2860,23 @@ class App:
                 text=t("bundle_row_early_only", pct=data["early_pct"]), fg=TEXT)
             self.bundle_big_val.configure(text=f"{data['early_pct']:.1f}%", fg=GOLD)
             self.bundle_verdict_lbl.configure(text=t("bundle_verdict_early_only"), fg=GOLD)
-            self.clear_bundle_table("bundle_table_no_funder_check")
-            return
-
-        clusters = data.get("bundle_clusters") or {}
-        if clusters:
+        elif clusters:
             self.append_log(t("bundle_result_bundled", pct=data["bundle_pct"]), "error")
             self.bundle_big_val.configure(text=f"{data['bundle_pct']:.1f}%", fg=RED)
             self.bundle_verdict_lbl.configure(text=t("bundle_verdict_bundled"), fg=RED)
             self.bundle_row_val.configure(
                 text=t("bundle_row_bundled", pct=data["bundle_pct"]), fg=RED)
-
             for funder, info in sorted(clusters.items(), key=lambda kv: kv[1]["amount"], reverse=True):
                 short_funder = funder if len(funder) <= 20 else f"{funder[:10]}…{funder[-6:]}"
                 self.append_log(
                     t("bundle_result_cluster", n=len(info["wallets"]), funder=short_funder, pct=info["pct"]),
                     "error",
                 )
-                row_id = self.bundle_tree.insert(
-                    "", "end",
-                    values=(short_funder, len(info["wallets"]), f"{info['pct']:.2f}%"),
-                    tags=("bundle",),
-                )
-                self._bundle_row_data[row_id] = {"funder": funder, "wallets": info["wallets"]}
         else:
             self.append_log(t("bundle_result_none"), "info")
             self.bundle_big_val.configure(text="0.0%", fg=GREEN)
             self.bundle_verdict_lbl.configure(text=t("bundle_verdict_clean"), fg=GREEN)
             self.bundle_row_val.configure(text=t("bundle_row_clean"), fg=GREEN)
-            self.clear_bundle_table("bundle_table_clean")
 
         if data.get("truncated"):
             self.append_log(t("bundle_result_cap_note", n=25), "info")
@@ -2695,9 +2886,12 @@ class App:
         info = self._bundle_row_data.get(row_id)
         if not info:
             return
+        value = info.get("wallet") or info.get("funder")
+        if not value:
+            return
         self.root.clipboard_clear()
-        self.root.clipboard_append(info["funder"])
-        self.status_var.set(self.tr.t("copied", value=info["funder"]))
+        self.root.clipboard_append(value)
+        self.status_var.set(self.tr.t("copied", value=value))
 
     def on_close(self):
         if self.stop_event:
