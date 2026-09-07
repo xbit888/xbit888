@@ -120,6 +120,22 @@ TR = {
                               "zh": "代币已迁移到 DEX——请点击停止后重新开始。"},
     "log_unexpected_error": {"ru": "Неожиданная ошибка: {e}", "en": "Unexpected error: {e}", "zh": "发生意外错误：{e}"},
 
+    "card_bundle_analysis": {"ru": "АНАЛИЗ БАНДЛОВ", "en": "BUNDLE ANALYSIS", "zh": "捆绑分析"},
+    "card_trades": {"ru": "СДЕЛКИ", "en": "TRADES", "zh": "交易"},
+    "col_funder": {"ru": "Кошелёк-раздатчик", "en": "Funder wallet", "zh": "资金来源钱包"},
+    "col_wallets": {"ru": "Кошельков", "en": "Wallets", "zh": "钱包数"},
+    "col_supply_pct": {"ru": "% предложения", "en": "% of supply", "zh": "占供应量"},
+    "bundle_window_fmt": {"ru": "окно запуска: {w}с", "en": "launch window: {w}s", "zh": "上线窗口：{w} 秒"},
+    "bundle_verdict_checking": {"ru": "идёт проверка...", "en": "checking...", "zh": "检测中..."},
+    "bundle_verdict_bundled": {"ru": "ПОХОЖЕ НА БАНДЛ", "en": "LOOKS BUNDLED", "zh": "疑似捆绑"},
+    "bundle_verdict_clean": {"ru": "признаков бандла не найдено", "en": "no bundle signs found", "zh": "未发现捆绑迹象"},
+    "bundle_verdict_early_only": {"ru": "только % ранних покупок (раздатчик не проверялся)",
+                                   "en": "early-buy % only (funder not checked)",
+                                   "zh": "仅早期买入占比（未检测资金来源）"},
+    "bundle_verdict_na": {"ru": "нет данных", "en": "no data", "zh": "无数据"},
+    "bundle_early_fmt": {"ru": "Ранние покупки: {pct:.1f}% предложения · {wallets} кошельков",
+                          "en": "Early buys: {pct:.1f}% of supply · {wallets} wallets",
+                          "zh": "早期买入：占供应量 {pct:.1f}% · {wallets} 个钱包"},
     "row_bundle": {"ru": "БАНДЛ", "en": "BUNDLE", "zh": "捆绑检测"},
     "bundle_checking_short": {"ru": "проверка...", "en": "checking...", "zh": "检测中..."},
     "bundle_row_na": {"ru": "нет данных", "en": "n/a", "zh": "无数据"},
@@ -222,6 +238,9 @@ DEFAULT_EVM_RPCS = {
 }
 
 DEFAULT_SOLANA_RPC = "https://api.mainnet-beta.solana.com"
+
+# окно "запуска" токена, в котором ищем скоординированные закупы (бандлы)
+BUNDLE_WINDOW_SECONDS = 60
 
 CHAIN_DISPLAY_NAMES = {
     "ethereum": "Ethereum", "bsc": "BSC", "base": "Base", "arbitrum": "Arbitrum",
@@ -849,7 +868,7 @@ def check_evm_bundles(ca, chain_id, info, rpc_url, window_seconds, emit, tr, sto
                           max_wallets, funder_unsupported=funder_unsupported)
 
 
-def run_bundle_check(ca, emit, tr, stop_event, window_seconds=60):
+def run_bundle_check(ca, emit, tr, stop_event, window_seconds=BUNDLE_WINDOW_SECONDS):
     ca = ca.strip()
     fmt = detect_chain_by_format(ca)
     if fmt == "evm":
@@ -1069,24 +1088,39 @@ def find_uniswap_v4_pool_manager(rpc_url, token_address, lookback_blocks=100000,
     return None
 
 
-def _resolve_wallet_async(rpc_url, chain_id, tx_hash, emit):
-    """Резолвит адрес кошелька в фоновом потоке, не задерживая live-ленту/цену/MCAP."""
-    def worker():
+_wallet_queue = queue.Queue()
+_wallet_worker_lock = threading.Lock()
+_wallet_worker_started = False
+
+
+def _wallet_resolver_worker():
+    """Один фоновый воркер на всё приложение: резолвит кошельки по очереди с паузой.
+    Раньше на каждую сделку поднимался свой поток — на активном токене это давало
+    залп параллельных запросов и ловило 429 от публичного RPC."""
+    while True:
+        rpc_url, chain_id, tx_hash, emit = _wallet_queue.get()
         wallet = "?"
-        for _ in range(2):
-            try:
-                tx = evm_rpc_call(rpc_url, "eth_getTransactionByHash", [tx_hash])
-                if tx and tx.get("from"):
-                    wallet = tx["from"]
-                break
-            except Exception:
-                time.sleep(0.3)
+        try:
+            tx = evm_rpc_call(rpc_url, "eth_getTransactionByHash", [tx_hash])
+            if tx and tx.get("from"):
+                wallet = tx["from"]
+        except Exception:
+            pass
         emit("wallet_update", {
             "tx": tx_hash, "wallet": wallet,
             "wallet_url": explorer_address_url(chain_id, wallet) if wallet != "?" else "",
         })
+        time.sleep(0.25)
 
-    threading.Thread(target=worker, daemon=True).start()
+
+def _resolve_wallet_async(rpc_url, chain_id, tx_hash, emit):
+    """Ставит резолв кошелька в очередь — лента/цена/MCAP при этом не ждут."""
+    global _wallet_worker_started
+    with _wallet_worker_lock:
+        if not _wallet_worker_started:
+            threading.Thread(target=_wallet_resolver_worker, daemon=True).start()
+            _wallet_worker_started = True
+    _wallet_queue.put((rpc_url, chain_id, tx_hash, emit))
 
 
 def watch_evm_v4(ca, chain_id, pool_manager, pool_id, quote_token_address, quote_symbol,
@@ -1458,8 +1492,11 @@ class App:
         body.grid_rowconfigure(0, weight=1)
 
         self._build_token_card(body)
-        self._build_feed_card(body)
+        self._build_bundle_card(body)   # центр — главное: анализ бандлов
         self._build_stats_card(body)
+
+        # ---- второстепенная полоса: график + лента сделок ----
+        self._build_bottom_strip()
 
         # ---- панель логов ----
         log_frame = ttk.Frame(self.root, padding=(18, 0, 18, 6))
@@ -1547,38 +1584,96 @@ class App:
                                         font=("Consolas", 11, "bold"), anchor="w")
         self.bundle_row_val.pack(anchor="w")
 
-    def _build_feed_card(self, parent):
+    def _build_bundle_card(self, parent):
+        """Главная панель приложения — результат анализа бандлов."""
         card = self._card(parent, 1, weight=1)
+        pad = tk.Frame(card, bg=PANEL, padx=16, pady=14)
+        pad.pack(fill="both", expand=True)
 
-        top = tk.Frame(card, bg=PANEL, padx=14, pady=12)
-        top.pack(fill="x")
-        left = tk.Frame(top, bg=PANEL)
-        left.pack(side="left")
-        self.feed_card_title = tk.Label(left, bg=PANEL, fg=MUTED, font=("Segoe UI", 8, "bold"))
-        self.feed_card_title.pack(anchor="w")
-        right = tk.Frame(top, bg=PANEL)
-        right.pack(side="right")
-        self.last_price_cap = tk.Label(right, bg=PANEL, fg=MUTED, font=("Segoe UI", 8, "bold"), anchor="e")
+        head = tk.Frame(pad, bg=PANEL)
+        head.pack(fill="x")
+        self.bundle_card_title = tk.Label(head, bg=PANEL, fg=MUTED, font=("Segoe UI", 8, "bold"))
+        self.bundle_card_title.pack(side="left")
+        self.bundle_window_lbl = tk.Label(head, bg=PANEL, fg=MUTED, font=("Segoe UI", 8))
+        self.bundle_window_lbl.pack(side="right")
+
+        self.bundle_big_val = tk.Label(pad, text="—", bg=PANEL, fg=TEXT,
+                                        font=("Consolas", 40, "bold"), anchor="w")
+        self.bundle_big_val.pack(anchor="w", pady=(12, 0))
+        self.bundle_verdict_lbl = tk.Label(pad, text="", bg=PANEL, fg=MUTED,
+                                            font=("Segoe UI", 11, "bold"), anchor="w")
+        self.bundle_verdict_lbl.pack(anchor="w")
+        self.bundle_early_lbl = tk.Label(pad, text="", bg=PANEL, fg=MUTED,
+                                          font=("Consolas", 9), anchor="w")
+        self.bundle_early_lbl.pack(anchor="w", pady=(8, 0))
+
+        tk.Frame(pad, bg=BORDER, height=1).pack(fill="x", pady=12)
+
+        table_frame = tk.Frame(pad, bg=PANEL)
+        table_frame.pack(fill="both", expand=True)
+        cols = ("funder", "wallets", "pct")
+        self.bundle_tree = ttk.Treeview(table_frame, columns=cols, show="headings", style="Treeview")
+        self.bundle_tree.column("funder", width=240, anchor="w", stretch=True)
+        self.bundle_tree.column("wallets", width=90, anchor="center", stretch=False)
+        self.bundle_tree.column("pct", width=120, anchor="e", stretch=False)
+        self.bundle_tree.tag_configure("bundle", foreground=RED, background="#2a1116")
+        self.bundle_tree.bind("<Double-Button-1>", self.on_bundle_row_double_click)
+        vsb = ttk.Scrollbar(table_frame, orient="vertical", command=self.bundle_tree.yview)
+        self.bundle_tree.configure(yscrollcommand=vsb.set)
+        self.bundle_tree.pack(side="left", fill="both", expand=True)
+        vsb.pack(side="right", fill="y")
+        self._bundle_row_data = {}
+
+    def _build_bottom_strip(self):
+        """Второстепенная полоса: компактный график цены + компактная лента сделок."""
+        strip = ttk.Frame(self.root, padding=(18, 0, 18, 6))
+        strip.pack(fill="x")
+        strip.grid_columnconfigure(0, weight=2, uniform="strip")
+        strip.grid_columnconfigure(1, weight=3, uniform="strip")
+
+        chart_outer = tk.Frame(strip, bg=BORDER)
+        chart_outer.grid(row=0, column=0, sticky="nsew", padx=(0, 8))
+        chart_card = tk.Frame(chart_outer, bg=PANEL)
+        chart_card.pack(fill="both", expand=True, padx=1, pady=1)
+
+        chart_head = tk.Frame(chart_card, bg=PANEL, padx=10, pady=6)
+        chart_head.pack(fill="x")
+        self.feed_card_title = tk.Label(chart_head, bg=PANEL, fg=MUTED, font=("Segoe UI", 8, "bold"))
+        self.feed_card_title.pack(side="left")
+        price_box = tk.Frame(chart_head, bg=PANEL)
+        price_box.pack(side="right")
+        self.last_price_cap = tk.Label(price_box, bg=PANEL, fg=MUTED, font=("Segoe UI", 7, "bold"), anchor="e")
         self.last_price_cap.pack(anchor="e")
-        self.last_price_val = tk.Label(right, text="—", bg=PANEL, fg=GREEN,
-                                        font=("Consolas", 16, "bold"), anchor="e")
+        self.last_price_val = tk.Label(price_box, text="—", bg=PANEL, fg=GREEN,
+                                        font=("Consolas", 13, "bold"), anchor="e")
         self.last_price_val.pack(anchor="e")
 
-        self.spark_canvas = tk.Canvas(card, bg=PANEL, height=130, highlightthickness=0)
-        self.spark_canvas.pack(fill="x", padx=14, pady=(0, 10))
+        self.spark_canvas = tk.Canvas(chart_card, bg=PANEL, height=120, highlightthickness=0)
+        self.spark_canvas.pack(fill="both", expand=True, padx=10, pady=(0, 8))
         self.spark_placeholder = self.spark_canvas.create_text(
-            10, 65, anchor="w", fill=MUTED, font=("Segoe UI", 9), text=""
+            10, 60, anchor="w", fill=MUTED, font=("Segoe UI", 9), text=""
         )
         self.spark_canvas.bind("<Configure>", lambda e: self._redraw_candles())
 
-        table_frame = tk.Frame(card, bg=PANEL)
-        table_frame.pack(fill="both", expand=True, padx=14, pady=(0, 12))
+        feed_outer = tk.Frame(strip, bg=BORDER)
+        feed_outer.grid(row=0, column=1, sticky="nsew")
+        feed_card = tk.Frame(feed_outer, bg=PANEL)
+        feed_card.pack(fill="both", expand=True, padx=1, pady=1)
+
+        feed_head = tk.Frame(feed_card, bg=PANEL, padx=10, pady=6)
+        feed_head.pack(fill="x")
+        self.trades_title = tk.Label(feed_head, bg=PANEL, fg=MUTED, font=("Segoe UI", 8, "bold"))
+        self.trades_title.pack(side="left")
+
+        table_frame = tk.Frame(feed_card, bg=PANEL)
+        table_frame.pack(fill="both", expand=True, padx=10, pady=(0, 8))
 
         columns = ("time", "type", "wallet", "amount", "value", "tx")
-        self.tree = ttk.Treeview(table_frame, columns=columns, show="headings", style="Treeview")
+        self.tree = ttk.Treeview(table_frame, columns=columns, show="headings",
+                                  style="Treeview", height=6)
         for col, w, anchor in [
-            ("time", 70, "center"), ("type", 100, "center"), ("wallet", 190, "w"),
-            ("amount", 130, "e"), ("value", 110, "e"), ("tx", 170, "w"),
+            ("time", 62, "center"), ("type", 78, "center"), ("wallet", 130, "w"),
+            ("amount", 110, "e"), ("value", 90, "e"), ("tx", 110, "w"),
         ]:
             self.tree.column(col, width=w, anchor=anchor, stretch=(col in ("wallet", "tx")))
         self.tree.tag_configure("buy", foreground=GREEN, background="#0f2419")
@@ -1665,6 +1760,12 @@ class App:
         self.token_card_title.configure(text=t("card_token_info"))
         self.feed_card_title.configure(text=t("card_live_feed"))
         self.stats_card_title.configure(text=t("card_live_stats"))
+        self.bundle_card_title.configure(text=t("card_bundle_analysis"))
+        self.trades_title.configure(text=t("card_trades"))
+        self.bundle_window_lbl.configure(text=t("bundle_window_fmt", w=BUNDLE_WINDOW_SECONDS))
+        self.bundle_tree.heading("funder", text=t("col_funder"))
+        self.bundle_tree.heading("wallets", text=t("col_wallets"))
+        self.bundle_tree.heading("pct", text=t("col_supply_pct"))
         self.last_price_cap.configure(text=t("last_price_label"))
         self.stats_buys_cap.configure(text=t("header_stat_buys"))
         self.stats_sells_cap.configure(text=t("header_stat_sells"))
@@ -1900,13 +2001,17 @@ class App:
         lo = min(cd["low"] for cd in candles)
         hi = max(cd["high"] for cd in candles)
         span = (hi - lo) or (hi * 0.01 or 1)
-        pad_y = 6
-        pad_x = 4
+        pad_y = 8
+        pad_x = 6
         slot = (w - 2 * pad_x) / len(candles)
-        body_w = max(2, min(slot * 0.6, 14))
+        body_w = max(3, min(slot * 0.62, 18))
 
         def y_of(v):
             return h - pad_y - (v - lo) / span * (h - 2 * pad_y)
+
+        for frac in (0.0, 0.5, 1.0):  # лёгкая сетка, чтобы график не висел в пустоте
+            gy = pad_y + frac * (h - 2 * pad_y)
+            c.create_line(pad_x, gy, w - pad_x, gy, fill=BORDER, tags="candle")
 
         for i, cd in enumerate(candles):
             x = pad_x + i * slot + slot / 2
@@ -1982,6 +2087,10 @@ class App:
         self.stat_net_val.configure(text="—", fg=TEXT)
         self.last_price_val.configure(text="—", fg=GREEN)
         self.bundle_row_val.configure(text="—", fg=TEXT)
+        self.bundle_big_val.configure(text="—", fg=TEXT)
+        self.bundle_verdict_lbl.configure(text="", fg=MUTED)
+        self.bundle_early_lbl.configure(text="")
+        self.clear_bundle_table()
         self._redraw_candles()
 
     def start(self):
@@ -2047,6 +2156,10 @@ class App:
         tr = self.tr
 
         self.bundle_row_val.configure(text=tr.t("bundle_checking_short"), fg=MUTED)
+        self.bundle_big_val.configure(text="…", fg=MUTED)
+        self.bundle_verdict_lbl.configure(text=tr.t("bundle_verdict_checking"), fg=MUTED)
+        self.bundle_early_lbl.configure(text="")
+        self.clear_bundle_table()
 
         def worker():
             try:
@@ -2056,12 +2169,21 @@ class App:
 
         threading.Thread(target=worker, daemon=True).start()
 
+    def clear_bundle_table(self):
+        for row_id in self.bundle_tree.get_children():
+            self.bundle_tree.delete(row_id)
+        self._bundle_row_data.clear()
+
     def show_bundle_result(self, data):
         t = self.tr.t
+        self.clear_bundle_table()
 
         if data.get("error"):
             self.append_log(data["error"], "error")
             self.bundle_row_val.configure(text=t("bundle_row_na"), fg=MUTED)
+            self.bundle_big_val.configure(text="—", fg=MUTED)
+            self.bundle_verdict_lbl.configure(text=t("bundle_verdict_na"), fg=MUTED)
+            self.bundle_early_lbl.configure(text=str(data["error"]))
             return
 
         self.append_log(f"— {t('bundle_result_title')} —", "info")
@@ -2070,29 +2192,54 @@ class App:
               pct=data["early_pct"], wallets=data["early_wallets"]),
             "info",
         )
+        self.bundle_early_lbl.configure(
+            text=t("bundle_early_fmt", pct=data["early_pct"], wallets=data["early_wallets"]))
 
         if data.get("funder_unsupported"):
             self.append_log(t("bundle_funder_unsupported_note"), "info")
             self.bundle_row_val.configure(
                 text=t("bundle_row_early_only", pct=data["early_pct"]), fg=TEXT)
+            self.bundle_big_val.configure(text=f"{data['early_pct']:.1f}%", fg=GOLD)
+            self.bundle_verdict_lbl.configure(text=t("bundle_verdict_early_only"), fg=GOLD)
+            return
+
+        clusters = data.get("bundle_clusters") or {}
+        if clusters:
+            self.append_log(t("bundle_result_bundled", pct=data["bundle_pct"]), "error")
+            self.bundle_big_val.configure(text=f"{data['bundle_pct']:.1f}%", fg=RED)
+            self.bundle_verdict_lbl.configure(text=t("bundle_verdict_bundled"), fg=RED)
+            self.bundle_row_val.configure(
+                text=t("bundle_row_bundled", pct=data["bundle_pct"]), fg=RED)
+
+            for funder, info in sorted(clusters.items(), key=lambda kv: kv[1]["amount"], reverse=True):
+                short_funder = funder if len(funder) <= 20 else f"{funder[:10]}…{funder[-6:]}"
+                self.append_log(
+                    t("bundle_result_cluster", n=len(info["wallets"]), funder=short_funder, pct=info["pct"]),
+                    "error",
+                )
+                row_id = self.bundle_tree.insert(
+                    "", "end",
+                    values=(short_funder, len(info["wallets"]), f"{info['pct']:.2f}%"),
+                    tags=("bundle",),
+                )
+                self._bundle_row_data[row_id] = {"funder": funder, "wallets": info["wallets"]}
         else:
-            clusters = data.get("bundle_clusters") or {}
-            if clusters:
-                self.append_log(t("bundle_result_bundled", pct=data["bundle_pct"]), "error")
-                for funder, info in sorted(clusters.items(), key=lambda kv: kv[1]["amount"], reverse=True):
-                    short_funder = funder if len(funder) <= 14 else f"{funder[:6]}…{funder[-4:]}"
-                    self.append_log(
-                        t("bundle_result_cluster", n=len(info["wallets"]), funder=short_funder, pct=info["pct"]),
-                        "error",
-                    )
-                self.bundle_row_val.configure(
-                    text=t("bundle_row_bundled", pct=data["bundle_pct"]), fg=RED)
-            else:
-                self.append_log(t("bundle_result_none"), "info")
-                self.bundle_row_val.configure(text=t("bundle_row_clean"), fg=GREEN)
+            self.append_log(t("bundle_result_none"), "info")
+            self.bundle_big_val.configure(text="0.0%", fg=GREEN)
+            self.bundle_verdict_lbl.configure(text=t("bundle_verdict_clean"), fg=GREEN)
+            self.bundle_row_val.configure(text=t("bundle_row_clean"), fg=GREEN)
 
         if data.get("truncated"):
             self.append_log(t("bundle_result_cap_note", n=25), "info")
+
+    def on_bundle_row_double_click(self, event):
+        row_id = self.bundle_tree.identify_row(event.y)
+        info = self._bundle_row_data.get(row_id)
+        if not info:
+            return
+        self.root.clipboard_clear()
+        self.root.clipboard_append(info["funder"])
+        self.status_var.set(self.tr.t("copied", value=info["funder"]))
 
     def on_close(self):
         if self.stop_event:
