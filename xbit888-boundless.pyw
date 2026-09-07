@@ -153,6 +153,41 @@ TR = {
     "col_group": {"ru": "Группа", "en": "Group", "zh": "组"},
     "col_buyer": {"ru": "Кошелёк покупателя", "en": "Buyer wallet", "zh": "买家钱包"},
     "col_bought": {"ru": "Куплено", "en": "Bought", "zh": "买入量"},
+    "row_risk": {"ru": "РИСК", "en": "RISK", "zh": "风险"},
+    "risk_level_high": {"ru": "⚠ ВЫСОКИЙ РИСК", "en": "⚠ HIGH RISK", "zh": "⚠ 高风险"},
+    "risk_level_caution": {"ru": "⚠ ЕСТЬ К ЧЕМУ ПРИДРАТЬСЯ", "en": "⚠ WORTH A CLOSER LOOK", "zh": "⚠ 需要留意"},
+    "risk_level_low": {"ru": "✓ ЯВНЫХ ПРИЗНАКОВ НЕТ", "en": "✓ NO CLEAR SIGNS", "zh": "✓ 未见明显迹象"},
+    "risk_level_none": {"ru": "нет данных", "en": "no data", "zh": "无数据"},
+    "risk_bundle_big": {"ru": "{pct:.1f}% предложения скупили связанные кошельки",
+                         "en": "{pct:.1f}% of supply bought at launch by linked wallets",
+                         "zh": "{pct:.1f}% 的供应量由关联钱包买入"},
+    "risk_bundle_some": {"ru": "{pct:.1f}% предложения куплено связанными кошельками",
+                          "en": "{pct:.1f}% of supply bought at launch by linked wallets",
+                          "zh": "上线时 {pct:.1f}% 的供应量由关联钱包买入"},
+    "risk_bundle_small": {"ru": "в окне запуска есть связанные кошельки",
+                           "en": "linked wallets found in the launch window",
+                           "zh": "上线窗口内发现关联钱包"},
+    "risk_sniped_big": {"ru": "{pct:.0f}% предложения ушло в первую минуту",
+                         "en": "{pct:.0f}% of supply taken in the first minute",
+                         "zh": "第一分钟内已买走 {pct:.0f}% 的供应量"},
+    "risk_sniped_some": {"ru": "{pct:.0f}% предложения ушло на запуске",
+                          "en": "{pct:.0f}% of supply taken at launch",
+                          "zh": "上线时买走了 {pct:.0f}% 的供应量"},
+    "risk_top_wallet": {"ru": "один кошелёк взял {pct:.1f}% предложения",
+                         "en": "one wallet took {pct:.1f}% of supply",
+                         "zh": "单个钱包买走 {pct:.1f}% 的供应量"},
+    "risk_overhang": {"ru": "бандл до сих пор держит {pct:.1f}% предложения",
+                       "en": "the bundle still holds {pct:.1f}% of supply",
+                       "zh": "捆绑钱包仍持有 {pct:.1f}% 的供应量"},
+    "risk_concentration": {"ru": "10 крупнейших ранних кошельков держат {pct:.0f}%",
+                            "en": "the 10 biggest early wallets hold {pct:.0f}%",
+                            "zh": "最大的 10 个早期钱包持有 {pct:.0f}%"},
+    "risk_clean": {"ru": "в окне запуска ничего подозрительного",
+                    "en": "nothing suspicious in the launch window",
+                    "zh": "上线窗口内未见异常"},
+    "risk_disclaimer": {"ru": "сигналы из цепочки, не финансовый совет",
+                         "en": "on-chain signals, not financial advice",
+                         "zh": "链上信号，非投资建议"},
     "col_now": {"ru": "Сейчас", "en": "Now", "zh": "现在"},
     "bundle_row_sold": {"ru": "вышел", "en": "sold", "zh": "已清仓"},
     "bundle_still_held": {"ru": "ЕЩЁ ДЕРЖАТ", "en": "STILL HELD", "zh": "仍持有"},
@@ -833,6 +868,62 @@ def track_bundle_holdings(track, wallets, emit, stop_event, interval=20.0):
                 "held_pct": {w: (a / total_supply * 100) for w, a in held.items()},
             })
         stop_event.wait(interval)
+
+
+def assess_token_risk(data, held_by_wallet=None):
+    """Собирает сигналы риска из уже посчитанных данных о запуске.
+
+    Ничего не предсказывает и не советует: только называет то, что видно в
+    цепочке — сколько предложения ушло связанным кошелькам, насколько всё
+    сосредоточено в нескольких руках и сколько из этого висит над рынком
+    прямо сейчас. Каждый сигнал возвращается с текстом, чтобы вердикт не
+    выглядел чёрным ящиком."""
+    held_by_wallet = held_by_wallet or {}
+    rows = data.get("wallet_rows") or []
+    bundle_pct = data.get("bundle_pct") or 0.0
+    early_pct = data.get("early_pct") or 0.0
+    groups = len(data.get("bundle_clusters") or {})
+    reasons = []
+
+    if bundle_pct >= 15:
+        reasons.append(("high", "risk_bundle_big", {"pct": bundle_pct, "n": groups}))
+    elif bundle_pct >= 5:
+        reasons.append(("caution", "risk_bundle_some", {"pct": bundle_pct, "n": groups}))
+    elif groups:
+        reasons.append(("caution", "risk_bundle_small", {"pct": bundle_pct, "n": groups}))
+
+    if early_pct >= 50:
+        reasons.append(("high", "risk_sniped_big", {"pct": early_pct}))
+    elif early_pct >= 25:
+        reasons.append(("caution", "risk_sniped_some", {"pct": early_pct}))
+
+    top_pct = rows[0]["pct"] if rows else 0.0
+    if top_pct >= 10:
+        reasons.append(("high", "risk_top_wallet", {"pct": top_pct}))
+    elif top_pct >= 5:
+        reasons.append(("caution", "risk_top_wallet", {"pct": top_pct}))
+
+    if held_by_wallet:
+        bundle_held = sum(held_by_wallet.get(r["wallet"], 0.0) for r in rows if r.get("group"))
+        if bundle_held >= 5:
+            reasons.append(("high", "risk_overhang", {"pct": bundle_held}))
+        elif bundle_held >= 2:
+            reasons.append(("caution", "risk_overhang", {"pct": bundle_held}))
+
+        top_now = sorted((held_by_wallet.get(r["wallet"], 0.0) for r in rows), reverse=True)[:10]
+        concentration = sum(top_now)
+        if concentration >= 40:
+            reasons.append(("high", "risk_concentration", {"pct": concentration}))
+        elif concentration >= 20:
+            reasons.append(("caution", "risk_concentration", {"pct": concentration}))
+
+    if any(level == "high" for level, _k, _kw in reasons):
+        level = "high"
+    elif reasons:
+        level = "caution"
+    else:
+        level = "low"
+    return {"level": level, "reasons": reasons}
 
 
 def _finish_bundle_check(per_wallet, total_supply, launch_time, hit_cap, window_seconds,
@@ -2237,6 +2328,27 @@ class App:
                                         font=("Consolas", 11, "bold"), anchor="w")
         self.bundle_row_val.pack(anchor="w")
 
+        # вердикт по риску занимает низ карточки, который всё равно пустовал
+        tk.Frame(pad, bg=BORDER, height=1).pack(fill="x", pady=(12, 10))
+        risk_box = tk.Frame(pad, bg=PANEL)
+        risk_box.pack(fill="x")
+        self.risk_cap = tk.Label(risk_box, bg=PANEL, fg=MUTED,
+                                  font=("Segoe UI", 8, "bold"), anchor="w")
+        self.risk_cap.pack(anchor="w")
+        self.risk_level_lbl = tk.Label(risk_box, text="—", bg=PANEL, fg=MUTED,
+                                        font=("Segoe UI", 11, "bold"), anchor="w",
+                                        justify="left", wraplength=200)
+        self.risk_level_lbl.pack(anchor="w", pady=(2, 0))
+        # причины перечисляем всегда: вердикт без объяснения — чёрный ящик
+        self.risk_reasons_lbl = tk.Label(risk_box, text="", bg=PANEL, fg=MUTED,
+                                          font=("Segoe UI", 8), anchor="w",
+                                          justify="left", wraplength=200)
+        self.risk_reasons_lbl.pack(anchor="w", pady=(6, 0))
+        self.risk_note_lbl = tk.Label(risk_box, bg=PANEL, fg="#4a5563",
+                                       font=("Segoe UI", 7), anchor="w",
+                                       justify="left", wraplength=200)
+        self.risk_note_lbl.pack(anchor="w", pady=(8, 0))
+
     def _build_bundle_card(self, parent):
         """Главная панель приложения — результат анализа бандлов."""
         card = self._card(parent, 1, weight=1)
@@ -2439,6 +2551,9 @@ class App:
         self.stop_btn.configure(text=t("stop"))
         self.clear_btn.configure(text=t("clear"))
         self.bundle_row_cap.configure(text=t("row_bundle"))
+        self.risk_cap.configure(text=t("row_risk"))
+        self.risk_note_lbl.configure(text=t("risk_disclaimer"))
+        self._render_risk()
         if not self.worker:
             self.bundle_row_val.configure(text="—")
         self.status_var.set(t("status_ready") if not self.worker else t("status_running"))
@@ -2814,6 +2929,7 @@ class App:
         self._bundle_held.clear()
         self._bundle_held_logged = None
         self._bundle_last_result = None
+        self._render_risk()
         for key in self.bundle_stats:
             self._set_bundle_stat(key, "—")
         self.clear_bundle_table("bundle_table_idle")
@@ -3014,6 +3130,7 @@ class App:
                 tags.append("exited")
             self.bundle_tree.item(row_id, values=values, tags=tuple(tags))
         self._refresh_bundle_held_total()
+        self._render_risk()
 
     def _refresh_bundle_held_total(self):
         data = self._bundle_last_result or {}
@@ -3043,6 +3160,26 @@ class App:
             self.append_log(self.tr.t("bundle_held_log", pct=held_pct,
                                        left=still_in, total=len(rows)), "info")
 
+    def _render_risk(self):
+        """Перерисовывает вердикт по риску из последнего результата и текущих
+        остатков на кошельках — вызывается и при смене языка, и при каждом
+        обновлении балансов."""
+        t = self.tr.t
+        data = self._bundle_last_result
+        if not data:
+            self.risk_level_lbl.configure(text=t("risk_level_none"), fg=MUTED)
+            self.risk_reasons_lbl.configure(text="")
+            return
+
+        risk = assess_token_risk(data, self._bundle_held)
+        color = {"high": RED, "caution": GOLD, "low": GREEN}[risk["level"]]
+        self.risk_level_lbl.configure(text=t("risk_level_" + risk["level"]), fg=color)
+        if risk["reasons"]:
+            lines = [f"• {t(key, **kwargs)}" for _level, key, kwargs in risk["reasons"]]
+        else:
+            lines = [f"• {t('risk_clean')}"]
+        self.risk_reasons_lbl.configure(text="\n".join(lines))
+
     def show_bundle_result(self, data):
         t = self.tr.t
         self._stop_holdings_tracker()
@@ -3050,6 +3187,7 @@ class App:
         self._bundle_held_logged = None
         self.bundle_held_val.configure(text="—", fg=MUTED)
         self._bundle_last_result = None
+        self._render_risk()
         self.clear_bundle_table()
 
         if data.get("error"):
@@ -3077,6 +3215,7 @@ class App:
 
         self._bundle_last_result = data
         self._render_bundle_rows(data)
+        self._render_risk()
         if data.get("track") and data.get("wallet_rows"):
             self._start_holdings_tracker(data["track"], data["wallet_rows"])
 
