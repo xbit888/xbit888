@@ -1314,7 +1314,8 @@ class App:
         self.buy_volume = 0.0
         self.sell_volume = 0.0
         self.quote_symbol = ""
-        self.price_history = []
+        self.candles = []
+        self.candle_seconds = 5
         self.mcap_anchor = None
         self.mcap_unit = ""
         self.mcap_unit_is_prefix = True
@@ -1563,12 +1564,12 @@ class App:
                                         font=("Consolas", 16, "bold"), anchor="e")
         self.last_price_val.pack(anchor="e")
 
-        self.spark_canvas = tk.Canvas(card, bg=PANEL, height=90, highlightthickness=0)
+        self.spark_canvas = tk.Canvas(card, bg=PANEL, height=130, highlightthickness=0)
         self.spark_canvas.pack(fill="x", padx=14, pady=(0, 10))
         self.spark_placeholder = self.spark_canvas.create_text(
-            10, 45, anchor="w", fill=MUTED, font=("Segoe UI", 9), text=""
+            10, 65, anchor="w", fill=MUTED, font=("Segoe UI", 9), text=""
         )
-        self.spark_canvas.bind("<Configure>", lambda e: self._redraw_sparkline())
+        self.spark_canvas.bind("<Configure>", lambda e: self._redraw_candles())
 
         table_frame = tk.Frame(card, bg=PANEL)
         table_frame.pack(fill="both", expand=True, padx=14, pady=(0, 12))
@@ -1682,7 +1683,7 @@ class App:
         for field, (key, cap, val) in self.token_rows.items():
             cap.configure(text=t(key))
 
-        if not self.price_history:
+        if not self.candles:
             self.spark_canvas.itemconfigure(self.spark_placeholder, text=t("no_chart_data"))
 
         # перевод уже вставленных строк типа BUY/SELL в таблице
@@ -1760,9 +1761,9 @@ class App:
         # показываем капитализацию и стартовую точку графика сразу, не дожидаясь первой live-сделки
         if self.mcap_anchor:
             self.last_price_val.configure(text=self._format_mcap(self.mcap_anchor), fg=TEXT)
-        if self.price_native_anchor and not self.price_history:
-            self.price_history = [self.price_native_anchor]
-            self._redraw_sparkline()
+        if self.price_native_anchor and not self.candles:
+            self._add_candle_point(self.price_native_anchor)
+            self._redraw_candles()
 
         parts = [p for p in [name, data.get("network"), data.get("dex")] if p]
         if parts:
@@ -1855,9 +1856,7 @@ class App:
         if quote_raw and amount_raw:
             try:
                 price = quote_raw / amount_raw
-                self.price_history.append(price)
-                if len(self.price_history) > 80:
-                    self.price_history = self.price_history[-80:]
+                self._add_candle_point(price)
                 if self.mcap_anchor and self.price_native_anchor:
                     ratio = price / self.price_native_anchor
                     live_mcap = self.mcap_anchor * ratio
@@ -1866,41 +1865,58 @@ class App:
                 else:
                     self.last_price_val.configure(text=f"{price:,.10f}".rstrip("0").rstrip("."),
                                                    fg=GREEN if is_buy else RED)
-                self._redraw_sparkline()
+                self._redraw_candles()
             except ZeroDivisionError:
                 pass
 
-    def _redraw_sparkline(self):
+    def _add_candle_point(self, price):
+        """Группирует поступающие цены в свечи по интервалу CANDLE_SECONDS —
+        как на настоящем графике, а не просто линия цена-от-времени."""
+        bucket = int(time.time() // self.candle_seconds)
+        if self.candles and self.candles[-1]["bucket"] == bucket:
+            c = self.candles[-1]
+            c["high"] = max(c["high"], price)
+            c["low"] = min(c["low"], price)
+            c["close"] = price
+        else:
+            self.candles.append({
+                "bucket": bucket, "open": price, "high": price, "low": price, "close": price,
+            })
+            if len(self.candles) > 60:
+                self.candles = self.candles[-60:]
+
+    def _redraw_candles(self):
         c = self.spark_canvas
-        c.delete("spark")
+        c.delete("candle")
         w = c.winfo_width() or 400
-        h = c.winfo_height() or 90
-        pts = self.price_history
-        if len(pts) < 2:
+        h = c.winfo_height() or 130
+        candles = self.candles
+        if not candles:
             c.itemconfigure(self.spark_placeholder, text=self.tr.t("no_chart_data"))
             c.coords(self.spark_placeholder, 10, h // 2)
             return
         c.itemconfigure(self.spark_placeholder, text="")
 
-        lo, hi = min(pts), max(pts)
+        lo = min(cd["low"] for cd in candles)
+        hi = max(cd["high"] for cd in candles)
         span = (hi - lo) or (hi * 0.01 or 1)
-        pad = 6
-        step = (w - 2 * pad) / (len(pts) - 1)
+        pad_y = 6
+        pad_x = 4
+        slot = (w - 2 * pad_x) / len(candles)
+        body_w = max(2, min(slot * 0.6, 14))
 
-        def xy(i, v):
-            x = pad + i * step
-            y = h - pad - (v - lo) / span * (h - 2 * pad)
-            return x, y
+        def y_of(v):
+            return h - pad_y - (v - lo) / span * (h - 2 * pad_y)
 
-        for i in range(1, len(pts)):
-            x0, y0 = xy(i - 1, pts[i - 1])
-            x1, y1 = xy(i, pts[i])
-            color = GREEN if pts[i] >= pts[i - 1] else RED
-            c.create_line(x0, y0, x1, y1, fill=color, width=2, smooth=True, tags="spark")
-
-        x1, y1 = xy(len(pts) - 1, pts[-1])
-        last_color = GREEN if pts[-1] >= pts[-2] else RED
-        c.create_oval(x1 - 3, y1 - 3, x1 + 3, y1 + 3, fill=last_color, outline="", tags="spark")
+        for i, cd in enumerate(candles):
+            x = pad_x + i * slot + slot / 2
+            up = cd["close"] >= cd["open"]
+            color = GREEN if up else RED
+            c.create_line(x, y_of(cd["high"]), x, y_of(cd["low"]), fill=color, width=1, tags="candle")
+            top = y_of(max(cd["open"], cd["close"]))
+            bottom = y_of(min(cd["open"], cd["close"]))
+            c.create_rectangle(x - body_w / 2, top, x + body_w / 2, max(bottom, top + 1),
+                                fill=color, outline=color, tags="candle")
 
     def _blink_live_dot(self):
         if self._live_on:
@@ -1952,7 +1968,7 @@ class App:
         self.buy_volume = 0.0
         self.sell_volume = 0.0
         self.quote_symbol = ""
-        self.price_history = []
+        self.candles = []
         self.mcap_anchor = None
         self.mcap_unit = ""
         self.mcap_unit_is_prefix = True
@@ -1966,7 +1982,7 @@ class App:
         self.stat_net_val.configure(text="—", fg=TEXT)
         self.last_price_val.configure(text="—", fg=GREEN)
         self.bundle_row_val.configure(text="—", fg=TEXT)
-        self._redraw_sparkline()
+        self._redraw_candles()
 
     def start(self):
         ca = self.ca_entry.get().strip()
