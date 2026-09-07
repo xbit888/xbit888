@@ -159,6 +159,10 @@ TR = {
     "bundle_scanning_launch": {"ru": "Ищу самые первые сделки после запуска токена...",
                                 "en": "Scanning the earliest trades after launch...",
                                 "zh": "正在扫描代币刚上线时的最早交易..."},
+    "bundle_too_much_history": {
+        "ru": "У токена слишком много истории — до момента запуска не добрались. Анализ бандлов надёжен для свежих токенов.",
+        "en": "Too much history to reach the launch moment. Bundle analysis is reliable on freshly launched tokens.",
+        "zh": "该代币历史记录过多，无法回溯到上线时刻。捆绑分析仅对新上线代币可靠。"},
     "bundle_no_history": {"ru": "Не удалось найти историю сделок для этого адреса.",
                            "en": "Could not find trade history for this address.",
                            "zh": "未能找到该地址的交易历史。"},
@@ -584,19 +588,29 @@ def _get_transaction_with_retry(rpc_url, signature, tries=3):
     return None
 
 
-def find_early_signatures(rpc_url, address, window_seconds, max_pages=15, page_size=100):
-    """Пагинирует назад до самого начала истории адреса (или до потолка max_pages),
-    затем возвращает подписи из первых window_seconds после самой первой сделки —
-    то есть "окно запуска" токена."""
+def find_early_signatures(rpc_url, address, window_seconds, max_pages=12, page_size=1000,
+                           time_budget=45):
+    """Пагинирует назад до самого начала истории адреса, затем возвращает подписи из
+    первых window_seconds после самой первой сделки — то есть "окно запуска" токена.
+
+    Страница берётся максимально возможная (1000): у активного токена тысячи подписей,
+    и мелкими страницами дойти до начала истории не успеваем. hit_cap=True означает,
+    что до реального начала не добрались — тогда результат считать нельзя."""
     all_sigs = []
     before = None
+    started = time.time()
+    reached_start = False
+
     for _ in range(max_pages):
+        if time.time() - started > time_budget:
+            break
         batch = _get_signatures_with_retry(rpc_url, address, page_size, before)
         if not batch:
             break
         all_sigs.extend(batch)
         before = batch[-1]["signature"]
         if len(batch) < page_size:
+            reached_start = True
             break
 
     if not all_sigs:
@@ -604,16 +618,20 @@ def find_early_signatures(rpc_url, address, window_seconds, max_pages=15, page_s
 
     all_sigs.sort(key=lambda s: s.get("blockTime") or 0)
     launch_time = all_sigs[0].get("blockTime")
-    hit_cap = len(all_sigs) >= max_pages * page_size
-    early = [s for s in all_sigs if not s.get("err") and (s.get("blockTime") or 0) <= (launch_time or 0) + window_seconds]
-    return early, launch_time, hit_cap
+    early = [s for s in all_sigs
+             if not s.get("err") and (s.get("blockTime") or 0) <= (launch_time or 0) + window_seconds]
+    return early, launch_time, not reached_start
 
 
-def find_wallet_funder(rpc_url, wallet, max_pages=5, page_size=100):
+def find_wallet_funder(rpc_url, wallet, max_pages=3, page_size=1000):
     """Находит самую первую транзакцию кошелька и адрес, который его профинансировал
-    (system transfer, где destination == wallet). None, если не удалось определить."""
+    (system transfer, где destination == wallet). None, если не удалось определить.
+
+    Если до начала истории кошелька не добрались — возвращаем None, а не догадку:
+    кошелёк с тысячами транзакций всё равно не похож на свежий кошелёк бандлера."""
     before = None
     oldest_batch = None
+    reached_start = False
     for _ in range(max_pages):
         batch = _get_signatures_with_retry(rpc_url, wallet, page_size, before)
         if not batch:
@@ -621,9 +639,10 @@ def find_wallet_funder(rpc_url, wallet, max_pages=5, page_size=100):
         oldest_batch = batch
         before = batch[-1]["signature"]
         if len(batch) < page_size:
+            reached_start = True
             break
 
-    if not oldest_batch:
+    if not oldest_batch or not reached_start:
         return None
     oldest_sig = oldest_batch[-1]["signature"]
     tx = _get_transaction_with_retry(rpc_url, oldest_sig)
@@ -647,6 +666,10 @@ def check_pumpfun_bundles(mint, curve_pda, assoc_curve, decimals, total_supply, 
         emit("bundle_result", {"error": tr.t("bundle_no_history")})
         return
 
+    if hit_cap:
+        emit("bundle_result", {"error": tr.t("bundle_too_much_history")})
+        return
+
     per_wallet = {}
     for tx in _fetch_transactions_parallel(rpc_url, [s["signature"] for s in early_sigs], stop_event):
         trade = pumpfun_extract_trade(tx, curve_pda, assoc_curve, decimals)
@@ -663,6 +686,10 @@ def check_solana_dex_bundles(mint, pair_address, decimals, total_supply, rpc_url
     early_sigs, launch_time, hit_cap = find_early_signatures(rpc_url, pair_address, window_seconds)
     if not early_sigs:
         emit("bundle_result", {"error": tr.t("bundle_no_history")})
+        return
+
+    if hit_cap:
+        emit("bundle_result", {"error": tr.t("bundle_too_much_history")})
         return
 
     per_wallet = {}
