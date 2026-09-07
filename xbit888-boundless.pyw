@@ -153,6 +153,12 @@ TR = {
     "col_group": {"ru": "Группа", "en": "Group", "zh": "组"},
     "col_buyer": {"ru": "Кошелёк покупателя", "en": "Buyer wallet", "zh": "买家钱包"},
     "col_bought": {"ru": "Куплено", "en": "Bought", "zh": "买入量"},
+    "col_now": {"ru": "Сейчас", "en": "Now", "zh": "现在"},
+    "bundle_row_sold": {"ru": "вышел", "en": "sold", "zh": "已清仓"},
+    "bundle_still_held": {"ru": "ЕЩЁ ДЕРЖАТ", "en": "STILL HELD", "zh": "仍持有"},
+    "bundle_held_log": {"ru": "Ранние кошельки сейчас держат {pct:.2f}% предложения ({left} из {total} ещё в позиции)",
+                         "en": "Early wallets now hold {pct:.2f}% of supply ({left} of {total} still in)",
+                         "zh": "早期钱包当前持有供应量的 {pct:.2f}%（{total} 个中仍有 {left} 个持仓）"},
 
     "bundle_list_title": {"ru": "КТО КУПИЛ В ПЕРВЫЕ {w} СЕКУНД",
                            "en": "WHO BOUGHT IN THE FIRST {w} SECONDS",
@@ -216,6 +222,10 @@ TR = {
         "ru": "Публичный RPC ограничил запросы — данные не дочитались. Нажмите Старт ещё раз через несколько секунд.",
         "en": "The public RPC rate-limited us, so the data couldn't be read in full. Press Start again in a few seconds.",
         "zh": "公共 RPC 触发频率限制，数据未能完整读取。请几秒后再次点击开始。"},
+    "bundle_no_supply": {
+        "ru": "Не удалось прочитать общее предложение токена — проценты считать не из чего. Нажмите Старт ещё раз через несколько секунд.",
+        "en": "Could not read the token's total supply, so no percentage can be computed. Press Start again in a few seconds.",
+        "zh": "未能读取代币总供应量，无法计算占比。请几秒后再次点击开始。"},
     "bundle_no_early_buys": {"ru": "В окне запуска не найдено ни одной покупки.",
                               "en": "No buys found in the launch window.",
                               "zh": "在上线窗口内未发现任何买入。"},
@@ -738,7 +748,9 @@ def check_pumpfun_bundles(mint, curve_pda, assoc_curve, decimals, total_supply, 
             per_wallet[trade["wallet"]] = per_wallet.get(trade["wallet"], 0.0) + trade["token_amount"]
 
     _finish_bundle_check(per_wallet, total_supply, launch_time, hit_cap, window_seconds,
-                          lambda w: find_wallet_funder(rpc_url, w), emit, tr, stop_event, max_wallets)
+                          lambda w: find_wallet_funder(rpc_url, w), emit, tr, stop_event, max_wallets,
+                          track={"kind": "solana", "rpc_url": rpc_url, "token": mint,
+                                 "total_supply": total_supply})
 
 
 def check_solana_dex_bundles(mint, pair_address, decimals, total_supply, rpc_url,
@@ -759,11 +771,73 @@ def check_solana_dex_bundles(mint, pair_address, decimals, total_supply, rpc_url
             per_wallet[owner] = per_wallet.get(owner, 0.0) + amount
 
     _finish_bundle_check(per_wallet, total_supply, launch_time, hit_cap, window_seconds,
-                          lambda w: find_wallet_funder(rpc_url, w), emit, tr, stop_event, max_wallets)
+                          lambda w: find_wallet_funder(rpc_url, w), emit, tr, stop_event, max_wallets,
+                          track={"kind": "solana", "rpc_url": rpc_url, "token": mint,
+                                 "total_supply": total_supply})
+
+
+def solana_get_wallet_token_balance(rpc_url, owner, mint):
+    """Сколько токена лежит на кошельке прямо сейчас (сумма его token-аккаунтов)."""
+    payload = {
+        "jsonrpc": "2.0", "id": 1, "method": "getTokenAccountsByOwner",
+        "params": [owner, {"mint": mint}, {"encoding": "jsonParsed"}],
+    }
+    result = http_post_json(rpc_url, payload).get("result") or {}
+    total = 0.0
+    for acc in result.get("value") or []:
+        amount = acc["account"]["data"]["parsed"]["info"]["tokenAmount"]
+        total += float(amount.get("uiAmountString") or 0)
+    return total
+
+
+def evm_get_token_balance(rpc_url, token_address, wallet):
+    """balanceOf(address) — текущий баланс кошелька по токену."""
+    data = "0x70a08231" + wallet.lower().replace("0x", "").rjust(64, "0")
+    result = evm_rpc_call(rpc_url, "eth_call", [{"to": token_address, "data": data}, "latest"])
+    return int(result, 16) if result and result != "0x" else 0
+
+
+def track_bundle_holdings(track, wallets, emit, stop_event, interval=20.0):
+    """Периодически перечитывает балансы ранних кошельков.
+
+    Сам процент бандла — это факт из прошлого: столько было скуплено в окне
+    запуска, и меняться он не может. А вот сколько из этого ещё лежит на тех же
+    кошельках, меняется каждую минуту — именно это и нужно видеть живым."""
+    kind = track.get("kind")
+    rpc_url = track.get("rpc_url")
+    token = track.get("token")
+    total_supply = track.get("total_supply") or 0
+    decimals = track.get("decimals") or 0
+    if not wallets or not rpc_url or not token or not total_supply:
+        return
+
+    def balance_of(wallet):
+        if kind == "evm":
+            return evm_get_token_balance(rpc_url, token, wallet) / (10 ** decimals)
+        return solana_get_wallet_token_balance(rpc_url, wallet, token)
+
+    while not stop_event.is_set():
+        held = {}
+        with concurrent.futures.ThreadPoolExecutor(max_workers=4) as pool:
+            future_map = {pool.submit(balance_of, w): w for w in wallets}
+            for fut in concurrent.futures.as_completed(future_map):
+                if stop_event.is_set():
+                    return
+                wallet = future_map[fut]
+                try:
+                    held[wallet] = fut.result()
+                except Exception:
+                    continue  # кошелёк не дочитался — прошлое значение не трогаем
+        if held and not stop_event.is_set():
+            emit("bundle_holdings", {
+                "held_pct": {w: (a / total_supply * 100) for w, a in held.items()},
+            })
+        stop_event.wait(interval)
 
 
 def _finish_bundle_check(per_wallet, total_supply, launch_time, hit_cap, window_seconds,
-                          funder_fn, emit, tr, stop_event, max_wallets, funder_unsupported=False):
+                          funder_fn, emit, tr, stop_event, max_wallets, funder_unsupported=False,
+                          track=None):
     if not per_wallet:
         emit("bundle_result", {"error": tr.t("bundle_no_early_buys")})
         return
@@ -834,6 +908,7 @@ def _finish_bundle_check(per_wallet, total_supply, launch_time, hit_cap, window_
         "early_wallets": len(per_wallet),
         "bundle_clusters": bundle_clusters,
         "wallet_rows": wallet_rows,
+        "track": track,
         "window_seconds": window_seconds,
         "hit_cap": hit_cap,
         "truncated": truncated,
@@ -936,6 +1011,22 @@ def _scan_evm_logs(rpc_url, address, topics, start_block, window_seconds, block_
     return logs
 
 
+def rpc_call_retry(fn, *args, tries=4, delay=0.6):
+    """Повтор с нарастающей паузой для одиночных RPC-запросов.
+
+    К моменту чтения supply мы уже успели прокачать через публичный RPC десятки
+    тысяч логов, и он нередко отвечает 429 именно на этот запрос. Без повтора
+    supply молча становился нулём, а вместе с ним обнулялись все проценты."""
+    last_error = None
+    for attempt in range(tries):
+        try:
+            return fn(*args)
+        except Exception as e:
+            last_error = e
+            time.sleep(delay * (2 ** attempt))
+    raise last_error
+
+
 def evm_get_total_supply(rpc_url, token_address):
     """totalSupply() напрямую с контракта — не зависит от индексаторов."""
     result = evm_rpc_call(rpc_url, "eth_call", [{"to": token_address, "data": "0x18160ddd"}, "latest"])
@@ -1013,13 +1104,17 @@ def check_evm_bundles(ca, chain_id, info, rpc_url, window_seconds, emit, tr, sto
         return
 
     try:
-        decimals = evm_get_decimals(rpc_url, ca)
+        decimals = rpc_call_retry(evm_get_decimals, rpc_url, ca)
     except Exception:
         decimals = 18
     try:
-        total_supply = evm_get_total_supply(rpc_url, ca) / (10 ** decimals)
+        total_supply = rpc_call_retry(evm_get_total_supply, rpc_url, ca) / (10 ** decimals)
     except Exception:
         total_supply = 0
+    if not total_supply:
+        # без общего предложения все проценты — нули, показывать такое нельзя
+        emit("bundle_result", {"error": tr.t("bundle_no_supply")})
+        return
 
     swaps, _latest, rpc_blocked = fetch_all_pool_swaps(rpc_url, pool_manager, pool_id,
                                                        stop_event=stop_event)
@@ -1075,7 +1170,9 @@ def check_evm_bundles(ca, chain_id, info, rpc_url, window_seconds, emit, tr, sto
     funder_unsupported = chain_id not in BLOCKSCOUT_API_BASE
     _finish_bundle_check(per_wallet, total_supply, launch_ts, False, window_seconds,
                           lambda w: evm_find_wallet_funder(chain_id, w), emit, tr, stop_event,
-                          max_wallets, funder_unsupported=funder_unsupported)
+                          max_wallets, funder_unsupported=funder_unsupported,
+                          track={"kind": "evm", "rpc_url": rpc_url, "token": ca,
+                                 "decimals": decimals, "total_supply": total_supply})
 
 
 def run_bundle_check(ca, emit, tr, stop_event, window_seconds=BUNDLE_WINDOW_SECONDS, rpc_override=None):
@@ -1129,9 +1226,12 @@ def run_bundle_check(ca, emit, tr, stop_event, window_seconds=BUNDLE_WINDOW_SECO
         emit("bundle_result", {"error": tr.t("bundle_no_pair")})
         return
     try:
-        total_supply = solana_get_token_supply(rpc_url, ca)
+        total_supply = rpc_call_retry(solana_get_token_supply, rpc_url, ca)
     except Exception:
         total_supply = 0
+    if not total_supply:
+        emit("bundle_result", {"error": tr.t("bundle_no_supply")})
+        return
     check_solana_dex_bundles(ca, info["pairAddress"], 0, total_supply, rpc_url,
                               window_seconds, emit, tr, stop_event)
 
@@ -1821,6 +1921,7 @@ class App:
         self.log_queue = queue.Queue()
         self.stop_event = None
         self._bundle_stop_event = None
+        self._holdings_stop = None
         self.worker = None
         self.meta_widgets = {}
 
@@ -2154,12 +2255,33 @@ class App:
 
         big_box = tk.Frame(summary, bg=PANEL)
         big_box.pack(side="left")
-        self.bundle_big_cap = tk.Label(big_box, bg=PANEL, fg=MUTED,
+
+        pair = tk.Frame(big_box, bg=PANEL)
+        pair.pack(anchor="w")
+
+        bought_box = tk.Frame(pair, bg=PANEL)
+        bought_box.pack(side="left")
+        self.bundle_big_cap = tk.Label(bought_box, bg=PANEL, fg=MUTED,
                                         font=("Segoe UI", 8, "bold"), anchor="w")
         self.bundle_big_cap.pack(anchor="w")
-        self.bundle_big_val = tk.Label(big_box, text="—", bg=PANEL, fg=TEXT,
+        self.bundle_big_val = tk.Label(bought_box, text="—", bg=PANEL, fg=TEXT,
                                         font=("Consolas", 38, "bold"), anchor="w")
         self.bundle_big_val.pack(anchor="w")
+
+        # цифра слева — снимок запуска, она не может меняться; справа — сколько
+        # из этого бандл держит прямо сейчас, и вот она живая
+        tk.Label(pair, text="→", bg=PANEL, fg=BORDER,
+                 font=("Consolas", 22, "bold")).pack(side="left", padx=14, pady=(14, 0))
+
+        held_box = tk.Frame(pair, bg=PANEL)
+        held_box.pack(side="left")
+        self.bundle_held_cap = tk.Label(held_box, bg=PANEL, fg=MUTED,
+                                         font=("Segoe UI", 8, "bold"), anchor="w")
+        self.bundle_held_cap.pack(anchor="w")
+        self.bundle_held_val = tk.Label(held_box, text="—", bg=PANEL, fg=MUTED,
+                                         font=("Consolas", 38, "bold"), anchor="w")
+        self.bundle_held_val.pack(anchor="w")
+
         self.bundle_verdict_lbl = tk.Label(big_box, text="", bg=PANEL, fg=MUTED,
                                             font=("Segoe UI", 11, "bold"), anchor="w")
         self.bundle_verdict_lbl.pack(anchor="w")
@@ -2193,13 +2315,14 @@ class App:
 
         table_frame = tk.Frame(pad, bg=PANEL)
         table_frame.pack(fill="both", expand=True)
-        cols = ("group", "wallet", "pct", "amount", "funder")
+        cols = ("group", "wallet", "pct", "now", "amount", "funder")
         self.bundle_tree = ttk.Treeview(table_frame, columns=cols, show="headings", style="Treeview")
         self.bundle_tree.column("group", width=58, anchor="center", stretch=False)
-        self.bundle_tree.column("wallet", width=210, anchor="w", stretch=True)
+        self.bundle_tree.column("wallet", width=200, anchor="w", stretch=True)
         self.bundle_tree.column("pct", width=100, anchor="e", stretch=False)
-        self.bundle_tree.column("amount", width=130, anchor="e", stretch=False)
-        self.bundle_tree.column("funder", width=190, anchor="w", stretch=False)
+        self.bundle_tree.column("now", width=95, anchor="e", stretch=False)
+        self.bundle_tree.column("amount", width=120, anchor="e", stretch=False)
+        self.bundle_tree.column("funder", width=180, anchor="w", stretch=False)
         # кошельки одной группы подсвечены одинаково, соседние группы — разными
         # оттенками, чтобы связка читалась глазом, а не только по номеру
         for idx, bg_color in enumerate(("#2a1116", "#2b1a0f", "#251327", "#10262b"), start=1):
@@ -2207,6 +2330,7 @@ class App:
         self.bundle_tree.tag_configure("solo", foreground=TEXT, background=PANEL)
         self.bundle_tree.tag_configure("solo_alt", foreground=TEXT, background=PANEL2)
         self.bundle_tree.tag_configure("placeholder", foreground=MUTED)
+        self.bundle_tree.tag_configure("exited", foreground="#5c6773")
         self.bundle_tree.bind("<Double-Button-1>", self.on_bundle_row_double_click)
         vsb = ttk.Scrollbar(table_frame, orient="vertical", command=self.bundle_tree.yview)
         self.bundle_tree.configure(yscrollcommand=vsb.set)
@@ -2215,6 +2339,10 @@ class App:
         self._bundle_row_data = {}
         self._bundle_placeholder_key = None
         self._bundle_last_result = None
+        self._bundle_wallet_rows = {}   # кошелёк -> строка таблицы, для живого обновления
+        self._bundle_held = {}          # кошелёк -> % предложения на нём сейчас
+        self._bundle_held_logged = None
+        self._bundle_big_cap_key = "bundle_stat_bundled"
 
     def _build_bottom_strip(self):
         """Второстепенная полоса: компактный график цены + компактная лента сделок."""
@@ -2325,7 +2453,8 @@ class App:
         self.bundle_card_title.configure(text=t("card_bundle_analysis"))
         self.trades_title.configure(text=t("card_trades"))
         self.bundle_window_lbl.configure(text=t("bundle_window_fmt", w=BUNDLE_WINDOW_SECONDS))
-        self.bundle_big_cap.configure(text=t("bundle_stat_bundled"))
+        self.bundle_big_cap.configure(text=t(self._bundle_big_cap_key))
+        self.bundle_held_cap.configure(text=t("bundle_still_held"))
         self.bundle_list_title.configure(text=t("bundle_list_title", w=BUNDLE_WINDOW_SECONDS))
         self.bundle_list_hint.configure(text=t("bundle_list_hint"))
         for key, (cap, _val) in self.bundle_stats.items():
@@ -2335,6 +2464,7 @@ class App:
         self.bundle_tree.heading("group", text=t("col_group"), anchor="center")
         self.bundle_tree.heading("wallet", text=t("col_buyer"), anchor="w")
         self.bundle_tree.heading("pct", text=t("col_supply_pct"), anchor="e")
+        self.bundle_tree.heading("now", text=t("col_now"), anchor="e")
         self.bundle_tree.heading("amount", text=t("col_bought"), anchor="e")
         self.bundle_tree.heading("funder", text=t("col_funder"), anchor="w")
         if self._bundle_placeholder_key:  # подсказка тоже должна переводиться
@@ -2391,6 +2521,8 @@ class App:
                     self.update_trade_wallet(payload)
                 elif kind == "bundle_result":
                     self.show_bundle_result(payload)
+                elif kind == "bundle_holdings":
+                    self.update_bundle_holdings(payload)
                 elif kind in ("info", "error"):
                     self.status_var.set(str(payload))
                     self.append_log(str(payload), kind)
@@ -2677,6 +2809,10 @@ class App:
         self.bundle_row_val.configure(text="—", fg=TEXT)
         self.bundle_big_val.configure(text="—", fg=TEXT)
         self.bundle_verdict_lbl.configure(text="", fg=MUTED)
+        self.bundle_held_val.configure(text="—", fg=MUTED)
+        self._stop_holdings_tracker()
+        self._bundle_held.clear()
+        self._bundle_held_logged = None
         self._bundle_last_result = None
         for key in self.bundle_stats:
             self._set_bundle_stat(key, "—")
@@ -2738,10 +2874,12 @@ class App:
         self.ca_entry.configure(state="normal")
         self._show_ca_placeholder()
         self.stop_btn.configure(state="disabled")
+        self._stop_holdings_tracker()  # Стоп гасит и фоновое перечитывание балансов
 
     def start_bundle_check(self, ca, rpc_override=None):
         if self._bundle_stop_event:
             self._bundle_stop_event.set()  # прерываем предыдущую проверку, если ещё бежит
+        self._stop_holdings_tracker()
 
         self._bundle_stop_event = threading.Event()
         bundle_stop_event = self._bundle_stop_event
@@ -2767,12 +2905,13 @@ class App:
         for row_id in self.bundle_tree.get_children():
             self.bundle_tree.delete(row_id)
         self._bundle_row_data.clear()
+        self._bundle_wallet_rows.clear()
         # пустая таблица без пояснения выглядит как будто что-то сломалось,
         # поэтому всегда показываем строку-подсказку о текущем состоянии
         self._bundle_placeholder_key = placeholder_key
         if placeholder_key:
             self.bundle_tree.insert("", "end",
-                                     values=("", self.tr.t(placeholder_key), "", "", ""),
+                                     values=("", self.tr.t(placeholder_key), "", "", "", ""),
                                      tags=("placeholder",))
 
     def _set_bundle_stat(self, key, text, color=None):
@@ -2793,6 +2932,7 @@ class App:
         for row_id in self.bundle_tree.get_children():
             self.bundle_tree.delete(row_id)
         self._bundle_row_data.clear()
+        self._bundle_wallet_rows.clear()
         self._bundle_placeholder_key = None
 
         solo_index = 0
@@ -2815,16 +2955,100 @@ class App:
             else:
                 funder_text = t("bundle_funder_skipped")
 
+            held = self._bundle_held.get(wallet)
+            tag_list = (tag,)
+            if held is None:
+                now_text = "—"          # баланс ещё не прочитан
+            elif held < 0.0005:
+                now_text = t("bundle_row_sold")
+                tag_list = (tag, "exited")
+            else:
+                now_text = f"{held:.2f}%"
+
             new_id = self.bundle_tree.insert(
                 "", "end",
-                values=(group_text, short_wallet, f"{row['pct']:.2f}%",
+                values=(group_text, short_wallet, f"{row['pct']:.2f}%", now_text,
                         human_number(row["amount"]), funder_text),
-                tags=(tag,),
+                tags=tag_list,
             )
             self._bundle_row_data[new_id] = {"wallet": wallet, "funder": funder}
+            self._bundle_wallet_rows[wallet] = new_id
+
+    # -- живое отслеживание остатков на кошельках бандла -------------------
+    def _start_holdings_tracker(self, track, rows):
+        self._stop_holdings_tracker()
+        grouped = [r["wallet"] for r in rows if r.get("group")]
+        others = [r["wallet"] for r in rows if not r.get("group")]
+        # кошельки бандла — обязательно, остальные добираем сверху списка:
+        # каждый кошелёк это отдельный запрос, а публичный RPC не резиновый
+        wallets = grouped + others[:max(0, 120 - len(grouped))]
+        if not wallets:
+            return
+        self._holdings_stop = threading.Event()
+        stop_event = self._holdings_stop
+        threading.Thread(
+            target=lambda: track_bundle_holdings(track, wallets, self.emit, stop_event),
+            daemon=True,
+        ).start()
+
+    def _stop_holdings_tracker(self):
+        if self._holdings_stop:
+            self._holdings_stop.set()
+            self._holdings_stop = None
+
+    def update_bundle_holdings(self, data):
+        held = data.get("held_pct") or {}
+        if not held:
+            return
+        self._bundle_held.update(held)
+        t = self.tr.t
+        for wallet, pct in held.items():
+            row_id = self._bundle_wallet_rows.get(wallet)
+            if not row_id or not self.bundle_tree.exists(row_id):
+                continue
+            values = list(self.bundle_tree.item(row_id, "values"))
+            sold_out = pct < 0.0005
+            values[3] = t("bundle_row_sold") if sold_out else f"{pct:.2f}%"
+            tags = [tag for tag in self.bundle_tree.item(row_id, "tags") if tag != "exited"]
+            if sold_out:
+                tags.append("exited")
+            self.bundle_tree.item(row_id, values=values, tags=tuple(tags))
+        self._refresh_bundle_held_total()
+
+    def _refresh_bundle_held_total(self):
+        data = self._bundle_last_result or {}
+        all_rows = data.get("wallet_rows") or []
+        grouped = [r for r in all_rows if r.get("group")]
+        # правая цифра всегда считает ровно тот же набор кошельков, что и левая:
+        # есть группы — только их, нет групп — всех ранних покупателей
+        if grouped:
+            rows, bought = grouped, (data.get("bundle_pct") or 0.0)
+        else:
+            rows, bought = all_rows, (data.get("early_pct") or 0.0)
+        known = [r for r in rows if r["wallet"] in self._bundle_held]
+        if not known:
+            self.bundle_held_val.configure(text="—", fg=MUTED)
+            return
+        held_pct = sum(self._bundle_held[r["wallet"]] for r in known)
+        # цвет по доле оставшегося: держат почти всё — навес никуда не делся
+        ratio = (held_pct / bought) if bought else 0.0
+        color = RED if ratio >= 0.66 else (GOLD if ratio >= 0.33 else GREEN)
+        # часть кошельков могла не дочитаться — тогда честнее показать "не меньше"
+        prefix = "" if len(known) == len(rows) else "≥"
+        self.bundle_held_val.configure(text=f"{prefix}{held_pct:.1f}%", fg=color)
+
+        still_in = sum(1 for r in known if self._bundle_held[r["wallet"]] >= 0.0005)
+        if self._bundle_held_logged != (round(held_pct, 2), still_in):
+            self._bundle_held_logged = (round(held_pct, 2), still_in)
+            self.append_log(self.tr.t("bundle_held_log", pct=held_pct,
+                                       left=still_in, total=len(rows)), "info")
 
     def show_bundle_result(self, data):
         t = self.tr.t
+        self._stop_holdings_tracker()
+        self._bundle_held.clear()
+        self._bundle_held_logged = None
+        self.bundle_held_val.configure(text="—", fg=MUTED)
         self._bundle_last_result = None
         self.clear_bundle_table()
 
@@ -2853,6 +3077,11 @@ class App:
 
         self._bundle_last_result = data
         self._render_bundle_rows(data)
+        if data.get("track") and data.get("wallet_rows"):
+            self._start_holdings_tracker(data["track"], data["wallet_rows"])
+
+        self._bundle_big_cap_key = "bundle_stat_bundled" if clusters else "bundle_stat_early"
+        self.bundle_big_cap.configure(text=t(self._bundle_big_cap_key))
 
         if data.get("funder_unsupported"):
             self.append_log(t("bundle_funder_unsupported_note"), "info")
@@ -2874,7 +3103,7 @@ class App:
                 )
         else:
             self.append_log(t("bundle_result_none"), "info")
-            self.bundle_big_val.configure(text="0.0%", fg=GREEN)
+            self.bundle_big_val.configure(text=f"{data['early_pct']:.1f}%", fg=GREEN)
             self.bundle_verdict_lbl.configure(text=t("bundle_verdict_clean"), fg=GREEN)
             self.bundle_row_val.configure(text=t("bundle_row_clean"), fg=GREEN)
 
@@ -2898,6 +3127,7 @@ class App:
             self.stop_event.set()
         if self._bundle_stop_event:
             self._bundle_stop_event.set()
+        self._stop_holdings_tracker()
         self.root.destroy()
 
 
