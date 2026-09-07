@@ -1968,18 +1968,39 @@ LOGO_PNG_B64 = (
 )
 
 
-BG = "#0a0c10"
-PANEL = "#12151c"
-PANEL2 = "#171b24"
-BORDER = "#232733"
-TEXT = "#e8e9ed"
-MUTED = "#7d8493"
-ACCENT = "#00d9ff"
-ACCENT_HOVER = "#4de6ff"
-GREEN = "#16c784"
-GREEN_DIM = "#0f6b48"
-RED = "#f6465d"
-GOLD = "#ffb454"
+# ---- палитра "кислотный терминал" -----------------------------------------
+# Оформление держится на одном акценте — ядовитом лайме. Зелёный и красный
+# оставлены исключительно за смыслом "рост / падение": это цвет данных, а не
+# интерфейса, поэтому в хроме они не встречаются.
+BG = "#08090a"
+PANEL = "#101214"
+PANEL2 = "#16191c"
+BORDER = "#1e2226"
+BORDER_HI = "#2f363b"       # рамка карточки/поля под фокусом
+TEXT = "#e8ece8"
+MUTED = "#6f7a72"
+FAINT = "#3d453f"           # самые тихие подписи, вроде дисклеймера
+ACCENT = "#ccff00"
+ACCENT_HOVER = "#e2ff4d"
+ACCENT_DIM = "#3d4a00"      # акцент в неактивном состоянии
+ON_ACCENT = "#08090a"       # текст поверх акцентной заливки: лайм слишком яркий для белого
+GREEN = "#00ff9d"
+GREEN_DIM = "#00593a"
+RED = "#ff2d55"
+RED_DIM = "#5c1023"
+GOLD = "#ffe100"            # предупреждение: ровно между лаймом и красным
+ROW_BUY = "#08201a"
+ROW_BUY_ALT = "#0b2a21"
+ROW_SELL = "#210911"
+ROW_SELL_ALT = "#2b0d17"
+ROW_SELECTED = "#2a3609"    # выделение строки — приглушённый лайм
+# (фон, текст) на группу: одинаковый красный не давал отличить Г1 от Г2
+GROUP_TINTS = (("#2c0c17", "#ff2d55"), ("#2b2200", "#ffe100"),
+               ("#231033", "#c77dff"), ("#062b2a", "#26e0d4"))
+EXITED = "#4b544d"
+
+# терминал — значит моноширинный шрифт везде, включая заголовки
+MONO = "Consolas"
 
 
 def human_number(n):
@@ -2002,9 +2023,9 @@ class App:
         self.lang_var = tk.StringVar(value=LANG_NAMES["en"])
 
         root.title("XBIT888")
-        root.geometry("1180x760")
+        root.geometry("1240x900")
         root.configure(bg=BG)
-        root.minsize(980, 600)
+        root.minsize(1040, 840)
 
         self._build_style()
         self._build_ui()
@@ -2049,35 +2070,38 @@ class App:
         style.configure("TFrame", background=BG)
         style.configure("Panel.TFrame", background=PANEL)
 
-        style.configure("TLabel", background=BG, foreground=TEXT, font=("Segoe UI", 10))
-        style.configure("Muted.TLabel", background=BG, foreground=MUTED, font=("Segoe UI", 9))
-        style.configure("Panel.TLabel", background=PANEL, foreground=TEXT, font=("Segoe UI", 9))
-        style.configure("PanelMuted.TLabel", background=PANEL, foreground=MUTED, font=("Segoe UI", 8))
-        style.configure("PanelValue.TLabel", background=PANEL, foreground=TEXT, font=("Consolas", 11, "bold"))
-        style.configure("Title.TLabel", background=BG, foreground=TEXT, font=("Segoe UI", 16, "bold"))
-        style.configure("Subtitle.TLabel", background=BG, foreground=MUTED, font=("Segoe UI", 9))
-        style.configure("Status.TLabel", background=BG, foreground=MUTED, font=("Segoe UI", 9))
+        style.configure("TLabel", background=BG, foreground=TEXT, font=(MONO, 10))
+        style.configure("Muted.TLabel", background=BG, foreground=MUTED, font=(MONO, 9))
+        style.configure("Panel.TLabel", background=PANEL, foreground=TEXT, font=(MONO, 9))
+        style.configure("PanelMuted.TLabel", background=PANEL, foreground=MUTED, font=(MONO, 8))
+        style.configure("PanelValue.TLabel", background=PANEL, foreground=TEXT, font=(MONO, 11, "bold"))
+        style.configure("Title.TLabel", background=BG, foreground=TEXT, font=(MONO, 16, "bold"))
+        style.configure("Subtitle.TLabel", background=BG, foreground=MUTED, font=(MONO, 9))
+        style.configure("Status.TLabel", background=BG, foreground=MUTED, font=(MONO, 9))
 
         style.configure("TEntry", fieldbackground=PANEL2, foreground=TEXT, insertcolor=TEXT,
                          bordercolor=BORDER, lightcolor=BORDER, darkcolor=BORDER, padding=6)
         style.map("TEntry", fieldbackground=[("readonly", PANEL2)])
 
-        style.configure("Accent.TButton", background=ACCENT, foreground="#ffffff",
-                         font=("Segoe UI", 10, "bold"), padding=(14, 8), borderwidth=0,
+        # на лайме читается только чёрный текст — белый на такой яркости слепнет
+        style.configure("Accent.TButton", background=ACCENT, foreground=ON_ACCENT,
+                         font=(MONO, 10, "bold"), padding=(16, 9), borderwidth=0,
                          focuscolor=ACCENT)
-        style.map("Accent.TButton", background=[("active", ACCENT_HOVER), ("disabled", "#123a44")],
-                  foreground=[("disabled", "#5a8a95")])
+        style.map("Accent.TButton", background=[("active", ACCENT_HOVER), ("disabled", ACCENT_DIM)],
+                  foreground=[("disabled", MUTED)])
 
         style.configure("Stop.TButton", background=PANEL2, foreground=RED,
-                         font=("Segoe UI", 10, "bold"), padding=(14, 8), borderwidth=1,
-                         bordercolor=BORDER, lightcolor=PANEL2, darkcolor=PANEL2, focuscolor=PANEL2)
-        style.map("Stop.TButton", background=[("active", "#1e1420"), ("disabled", PANEL2)],
-                  foreground=[("disabled", "#5a4247")])
+                         font=(MONO, 10, "bold"), padding=(16, 9), borderwidth=2,
+                         bordercolor=RED_DIM, lightcolor=PANEL2, darkcolor=PANEL2, focuscolor=PANEL2)
+        style.map("Stop.TButton", background=[("active", RED_DIM), ("disabled", PANEL2)],
+                  foreground=[("disabled", FAINT)],
+                  bordercolor=[("disabled", BORDER)])
 
         style.configure("Ghost.TButton", background=BG, foreground=MUTED,
-                         font=("Segoe UI", 9), padding=(10, 6), borderwidth=1,
+                         font=(MONO, 9), padding=(12, 7), borderwidth=2,
                          bordercolor=BORDER, lightcolor=BG, darkcolor=BG, focuscolor=BG)
-        style.map("Ghost.TButton", background=[("active", PANEL)], foreground=[("active", TEXT)])
+        style.map("Ghost.TButton", background=[("active", PANEL)], foreground=[("active", ACCENT)],
+                  bordercolor=[("active", BORDER_HI)])
 
         style.configure("TCombobox", fieldbackground=PANEL2, background=PANEL2, foreground=TEXT,
                          arrowcolor=TEXT, bordercolor=BORDER, padding=4)
@@ -2086,19 +2110,19 @@ class App:
         # borderwidth+relief+*color гасят светлую рамку, которую clam рисует вокруг
         # таблицы — на тёмной теме она выглядела как чужеродный белый прямоугольник
         style.configure("Treeview", background=PANEL, fieldbackground=PANEL, foreground=TEXT,
-                         rowheight=24, font=("Consolas", 10), borderwidth=0, relief="flat",
+                         rowheight=25, font=(MONO, 10), borderwidth=0, relief="flat",
                          bordercolor=PANEL, lightcolor=PANEL, darkcolor=PANEL)
         style.layout("Treeview", [("Treeview.treearea", {"sticky": "nswe"})])
-        style.configure("Treeview.Heading", background=BG, foreground=MUTED,
-                         font=("Segoe UI", 8, "bold"), borderwidth=0, relief="flat", padding=(6, 5))
-        style.map("Treeview.Heading", background=[("active", BG)], foreground=[("active", TEXT)])
-        style.map("Treeview", background=[("selected", "#12333d")], foreground=[("selected", TEXT)])
+        style.configure("Treeview.Heading", background=BG, foreground=ACCENT,
+                         font=(MONO, 8, "bold"), borderwidth=0, relief="flat", padding=(8, 6))
+        style.map("Treeview.Heading", background=[("active", BG)], foreground=[("active", ACCENT_HOVER)])
+        style.map("Treeview", background=[("selected", ROW_SELECTED)], foreground=[("selected", TEXT)])
 
         for sb in ("Vertical.TScrollbar", "TScrollbar"):
-            style.configure(sb, background=PANEL2, troughcolor=BG, bordercolor=BG,
-                             arrowcolor=MUTED, lightcolor=PANEL2, darkcolor=PANEL2,
+            style.configure(sb, background=BORDER, troughcolor=BG, bordercolor=BG,
+                             arrowcolor=MUTED, lightcolor=BORDER, darkcolor=BORDER,
                              borderwidth=0, relief="flat", arrowsize=10)
-            style.map(sb, background=[("active", BORDER)])
+            style.map(sb, background=[("active", ACCENT_DIM)])
 
     # -- layout ----------------------------------------------------------
     def _build_ui(self):
@@ -2124,7 +2148,7 @@ class App:
         brand_row.pack(anchor="w")
         tk.Label(brand_row, text="XBIT", bg=BG, fg=TEXT, font=("Consolas", 20, "bold")).pack(side="left")
         tk.Label(brand_row, text="888", bg=BG, fg=ACCENT, font=("Consolas", 20, "bold")).pack(side="left")
-        self.subtitle_lbl = tk.Label(brand_box, bg=BG, fg=MUTED, font=("Segoe UI", 9), anchor="w")
+        self.subtitle_lbl = tk.Label(brand_box, bg=BG, fg=MUTED, font=(MONO, 9), anchor="w")
         self.subtitle_lbl.pack(anchor="w")
 
         # live-индикатор по центру
@@ -2149,7 +2173,7 @@ class App:
         # активная подсвечена акцентом — выпадашка выбивалась из тёмного интерфейса
         lang_box = tk.Frame(header, bg=BG)
         lang_box.pack(side="right", padx=(0, 26))
-        self.lang_lbl = tk.Label(lang_box, bg=BG, fg=MUTED, font=("Segoe UI", 8, "bold"))
+        self.lang_lbl = tk.Label(lang_box, bg=BG, fg=MUTED, font=(MONO, 8, "bold"))
         self.lang_lbl.pack(anchor="e")
 
         seg = tk.Frame(lang_box, bg=BORDER)
@@ -2160,7 +2184,7 @@ class App:
         self.lang_buttons = {}
         for code in LANGS:
             btn = tk.Label(seg_inner, text=LANG_NAMES[code], bg=PANEL2, fg=MUTED,
-                            font=("Segoe UI", 9, "bold"), padx=10, pady=3, cursor="hand2")
+                            font=(MONO, 9, "bold"), padx=10, pady=3, cursor="hand2")
             btn.pack(side="left")
             btn.bind("<Button-1>", lambda e, c=code: self.set_language(c))
             self.lang_buttons[code] = btn
@@ -2178,7 +2202,7 @@ class App:
         self.ca_border = tk.Frame(input_row, bg=BORDER)
         self.ca_border.pack(side="left", fill="x", expand=True)
         ca_inner = tk.Frame(self.ca_border, bg=PANEL2)
-        ca_inner.pack(fill="both", expand=True, padx=1, pady=1)
+        ca_inner.pack(fill="both", expand=True, padx=2, pady=2)
 
         tk.Label(ca_inner, text="CA", bg=PANEL2, fg=ACCENT,
                  font=("Consolas", 10, "bold"), padx=13).pack(side="left")
@@ -2218,7 +2242,7 @@ class App:
         # ---- панель логов ----
         log_frame = ttk.Frame(self.root, padding=(18, 0, 18, 6))
         log_frame.pack(fill="x")
-        self.log_text = tk.Text(log_frame, height=4, bg=PANEL, fg=MUTED, insertbackground=TEXT,
+        self.log_text = tk.Text(log_frame, height=3, bg=PANEL, fg=MUTED, insertbackground=TEXT,
                                  font=("Consolas", 9), relief="flat", wrap="word", state="disabled")
         self.log_text.pack(fill="x")
         self.log_text.tag_config("error", foreground=GOLD)
@@ -2266,7 +2290,7 @@ class App:
     def _header_stat(self, parent, color, last=False):
         box = tk.Frame(parent, bg=BG)
         box.pack(side="left", padx=(0, 0) if last else (0, 22))
-        cap = tk.Label(box, bg=BG, fg=MUTED, font=("Segoe UI", 8, "bold"))
+        cap = tk.Label(box, bg=BG, fg=MUTED, font=(MONO, 8, "bold"))
         cap.pack(anchor="e")
         val = tk.Label(box, text="0", bg=BG, fg=color, font=("Consolas", 13, "bold"))
         val.pack(anchor="e")
@@ -2280,7 +2304,7 @@ class App:
             outer.configure(width=minwidth)
         parent.grid_columnconfigure(col, weight=weight)
         inner = tk.Frame(outer, bg=PANEL)
-        inner.pack(fill="both", expand=True, padx=1, pady=1)
+        inner.pack(fill="both", expand=True, padx=2, pady=2)
         return inner
 
     def _build_token_card(self, parent):
@@ -2288,21 +2312,21 @@ class App:
         pad = tk.Frame(card, bg=PANEL, padx=14, pady=12)
         pad.pack(fill="both", expand=True)
 
-        self.token_card_title = tk.Label(pad, bg=PANEL, fg=MUTED, font=("Segoe UI", 8, "bold"))
+        self.token_card_title = tk.Label(pad, bg=PANEL, fg=ACCENT, font=(MONO, 8, "bold"))
         self.token_card_title.pack(anchor="w")
 
         id_row = tk.Frame(pad, bg=PANEL)
         id_row.pack(fill="x", pady=(10, 12))
-        self.token_icon = tk.Label(id_row, text="?", width=3, bg=ACCENT, fg="#ffffff",
-                                    font=("Segoe UI", 12, "bold"))
+        self.token_icon = tk.Label(id_row, text="?", width=3, bg=ACCENT, fg=ON_ACCENT,
+                                    font=(MONO, 12, "bold"))
         self.token_icon.pack(side="left")
         name_box = tk.Frame(id_row, bg=PANEL)
         name_box.pack(side="left", padx=(10, 0), fill="x", expand=True)
         self.token_name_lbl = tk.Label(name_box, text="—", bg=PANEL, fg=TEXT,
-                                        font=("Segoe UI", 12, "bold"), anchor="w")
+                                        font=(MONO, 12, "bold"), anchor="w")
         self.token_name_lbl.pack(fill="x")
         self.token_symbol_lbl = tk.Label(name_box, text="", bg=PANEL, fg=MUTED,
-                                          font=("Segoe UI", 9), anchor="w")
+                                          font=(MONO, 9), anchor="w")
         self.token_symbol_lbl.pack(fill="x")
 
         tk.Frame(pad, bg=BORDER, height=1).pack(fill="x", pady=(0, 10))
@@ -2312,7 +2336,7 @@ class App:
                             ("row_price", "price"), ("row_liquidity", "liquidity")]:
             row = tk.Frame(pad, bg=PANEL)
             row.pack(fill="x", pady=4)
-            cap = tk.Label(row, bg=PANEL, fg=MUTED, font=("Segoe UI", 8, "bold"), anchor="w")
+            cap = tk.Label(row, bg=PANEL, fg=MUTED, font=(MONO, 8, "bold"), anchor="w")
             cap.pack(anchor="w")
             val = tk.Label(row, text="—", bg=PANEL, fg=TEXT, font=("Consolas", 11, "bold"), anchor="w")
             val.pack(anchor="w")
@@ -2322,32 +2346,11 @@ class App:
         tk.Frame(pad, bg=BORDER, height=1).pack(fill="x", pady=(4, 10))
         bundle_row = tk.Frame(pad, bg=PANEL)
         bundle_row.pack(fill="x")
-        self.bundle_row_cap = tk.Label(bundle_row, bg=PANEL, fg=MUTED, font=("Segoe UI", 8, "bold"), anchor="w")
+        self.bundle_row_cap = tk.Label(bundle_row, bg=PANEL, fg=MUTED, font=(MONO, 8, "bold"), anchor="w")
         self.bundle_row_cap.pack(anchor="w")
         self.bundle_row_val = tk.Label(bundle_row, text="—", bg=PANEL, fg=TEXT,
                                         font=("Consolas", 11, "bold"), anchor="w")
         self.bundle_row_val.pack(anchor="w")
-
-        # вердикт по риску занимает низ карточки, который всё равно пустовал
-        tk.Frame(pad, bg=BORDER, height=1).pack(fill="x", pady=(12, 10))
-        risk_box = tk.Frame(pad, bg=PANEL)
-        risk_box.pack(fill="x")
-        self.risk_cap = tk.Label(risk_box, bg=PANEL, fg=MUTED,
-                                  font=("Segoe UI", 8, "bold"), anchor="w")
-        self.risk_cap.pack(anchor="w")
-        self.risk_level_lbl = tk.Label(risk_box, text="—", bg=PANEL, fg=MUTED,
-                                        font=("Segoe UI", 11, "bold"), anchor="w",
-                                        justify="left", wraplength=200)
-        self.risk_level_lbl.pack(anchor="w", pady=(2, 0))
-        # причины перечисляем всегда: вердикт без объяснения — чёрный ящик
-        self.risk_reasons_lbl = tk.Label(risk_box, text="", bg=PANEL, fg=MUTED,
-                                          font=("Segoe UI", 8), anchor="w",
-                                          justify="left", wraplength=200)
-        self.risk_reasons_lbl.pack(anchor="w", pady=(6, 0))
-        self.risk_note_lbl = tk.Label(risk_box, bg=PANEL, fg="#4a5563",
-                                       font=("Segoe UI", 7), anchor="w",
-                                       justify="left", wraplength=200)
-        self.risk_note_lbl.pack(anchor="w", pady=(8, 0))
 
     def _build_bundle_card(self, parent):
         """Главная панель приложения — результат анализа бандлов."""
@@ -2357,9 +2360,9 @@ class App:
 
         head = tk.Frame(pad, bg=PANEL)
         head.pack(fill="x")
-        self.bundle_card_title = tk.Label(head, bg=PANEL, fg=MUTED, font=("Segoe UI", 8, "bold"))
+        self.bundle_card_title = tk.Label(head, bg=PANEL, fg=ACCENT, font=(MONO, 8, "bold"))
         self.bundle_card_title.pack(side="left")
-        self.bundle_window_lbl = tk.Label(head, bg=PANEL, fg=MUTED, font=("Segoe UI", 8))
+        self.bundle_window_lbl = tk.Label(head, bg=PANEL, fg=MUTED, font=(MONO, 8))
         self.bundle_window_lbl.pack(side="right")
 
         summary = tk.Frame(pad, bg=PANEL)
@@ -2374,7 +2377,7 @@ class App:
         bought_box = tk.Frame(pair, bg=PANEL)
         bought_box.pack(side="left")
         self.bundle_big_cap = tk.Label(bought_box, bg=PANEL, fg=MUTED,
-                                        font=("Segoe UI", 8, "bold"), anchor="w")
+                                        font=(MONO, 8, "bold"), anchor="w")
         self.bundle_big_cap.pack(anchor="w")
         self.bundle_big_val = tk.Label(bought_box, text="—", bg=PANEL, fg=TEXT,
                                         font=("Consolas", 38, "bold"), anchor="w")
@@ -2382,20 +2385,20 @@ class App:
 
         # цифра слева — снимок запуска, она не может меняться; справа — сколько
         # из этого бандл держит прямо сейчас, и вот она живая
-        tk.Label(pair, text="→", bg=PANEL, fg=BORDER,
+        tk.Label(pair, text="→", bg=PANEL, fg=MUTED,
                  font=("Consolas", 22, "bold")).pack(side="left", padx=14, pady=(14, 0))
 
         held_box = tk.Frame(pair, bg=PANEL)
         held_box.pack(side="left")
         self.bundle_held_cap = tk.Label(held_box, bg=PANEL, fg=MUTED,
-                                         font=("Segoe UI", 8, "bold"), anchor="w")
+                                         font=(MONO, 8, "bold"), anchor="w")
         self.bundle_held_cap.pack(anchor="w")
         self.bundle_held_val = tk.Label(held_box, text="—", bg=PANEL, fg=MUTED,
                                          font=("Consolas", 38, "bold"), anchor="w")
         self.bundle_held_val.pack(anchor="w")
 
         self.bundle_verdict_lbl = tk.Label(big_box, text="", bg=PANEL, fg=MUTED,
-                                            font=("Segoe UI", 11, "bold"), anchor="w")
+                                            font=(MONO, 11, "bold"), anchor="w")
         self.bundle_verdict_lbl.pack(anchor="w")
 
         # три подписанные цифры вместо одной строки текста: сразу понятно,
@@ -2411,24 +2414,48 @@ class App:
             val = tk.Label(box, text="—", bg=PANEL, fg=color,
                             font=("Consolas", 17, "bold"), anchor="e")
             val.pack(anchor="e")
-            cap = tk.Label(box, bg=PANEL, fg=MUTED, font=("Segoe UI", 8, "bold"), anchor="e")
+            cap = tk.Label(box, bg=PANEL, fg=MUTED, font=(MONO, 8, "bold"), anchor="e")
             cap.pack(anchor="e")
             self.bundle_stats[key] = (cap, val)
 
+        # Вердикт по риску живёт в широкой центральной панели: в узкой левой
+        # карточке те же причины разъезжались на четыре строки и вытягивали
+        # окно так, что нижнюю полосу срезало.
+        tk.Frame(pad, bg=BORDER, height=1).pack(fill="x", pady=(12, 10))
+        risk_box = tk.Frame(pad, bg=PANEL)
+        risk_box.pack(fill="x")
+
+        risk_head = tk.Frame(risk_box, bg=PANEL)
+        risk_head.pack(fill="x")
+        self.risk_cap = tk.Label(risk_head, bg=PANEL, fg=ACCENT,
+                                  font=(MONO, 8, "bold"))
+        self.risk_cap.pack(side="left")
+        self.risk_level_lbl = tk.Label(risk_head, text="—", bg=PANEL, fg=MUTED,
+                                        font=(MONO, 11, "bold"))
+        self.risk_level_lbl.pack(side="left", padx=(12, 0))
+        self.risk_note_lbl = tk.Label(risk_head, bg=PANEL, fg=FAINT, font=(MONO, 7))
+        self.risk_note_lbl.pack(side="right")
+
+        # причины перечисляем всегда: вердикт без объяснения — чёрный ящик
+        self.risk_reasons_lbl = tk.Label(risk_box, text="", bg=PANEL, fg=MUTED,
+                                          font=(MONO, 8), anchor="w",
+                                          justify="left")
+        self.risk_reasons_lbl.pack(fill="x", pady=(5, 0))
         tk.Frame(pad, bg=BORDER, height=1).pack(fill="x", pady=12)
 
         list_head = tk.Frame(pad, bg=PANEL)
         list_head.pack(fill="x", pady=(0, 6))
-        self.bundle_list_title = tk.Label(list_head, bg=PANEL, fg=TEXT,
-                                           font=("Segoe UI", 8, "bold"))
+        self.bundle_list_title = tk.Label(list_head, bg=PANEL, fg=ACCENT,
+                                           font=(MONO, 8, "bold"))
         self.bundle_list_title.pack(side="left")
-        self.bundle_list_hint = tk.Label(list_head, bg=PANEL, fg=MUTED, font=("Segoe UI", 8))
+        self.bundle_list_hint = tk.Label(list_head, bg=PANEL, fg=MUTED, font=(MONO, 8))
         self.bundle_list_hint.pack(side="right")
 
         table_frame = tk.Frame(pad, bg=PANEL)
         table_frame.pack(fill="both", expand=True)
         cols = ("group", "wallet", "pct", "now", "amount", "funder")
-        self.bundle_tree = ttk.Treeview(table_frame, columns=cols, show="headings", style="Treeview")
+        self.bundle_tree = ttk.Treeview(table_frame, columns=cols, show="headings",
+                                         style="Treeview", height=4)
         self.bundle_tree.column("group", width=58, anchor="center", stretch=False)
         self.bundle_tree.column("wallet", width=200, anchor="w", stretch=True)
         self.bundle_tree.column("pct", width=100, anchor="e", stretch=False)
@@ -2437,12 +2464,12 @@ class App:
         self.bundle_tree.column("funder", width=180, anchor="w", stretch=False)
         # кошельки одной группы подсвечены одинаково, соседние группы — разными
         # оттенками, чтобы связка читалась глазом, а не только по номеру
-        for idx, bg_color in enumerate(("#2a1116", "#2b1a0f", "#251327", "#10262b"), start=1):
-            self.bundle_tree.tag_configure(f"g{idx}", foreground=RED, background=bg_color)
+        for idx, (bg_color, fg_color) in enumerate(GROUP_TINTS, start=1):
+            self.bundle_tree.tag_configure(f"g{idx}", foreground=fg_color, background=bg_color)
         self.bundle_tree.tag_configure("solo", foreground=TEXT, background=PANEL)
         self.bundle_tree.tag_configure("solo_alt", foreground=TEXT, background=PANEL2)
         self.bundle_tree.tag_configure("placeholder", foreground=MUTED)
-        self.bundle_tree.tag_configure("exited", foreground="#5c6773")
+        self.bundle_tree.tag_configure("exited", foreground=EXITED)
         self.bundle_tree.bind("<Double-Button-1>", self.on_bundle_row_double_click)
         vsb = ttk.Scrollbar(table_frame, orient="vertical", command=self.bundle_tree.yview)
         self.bundle_tree.configure(yscrollcommand=vsb.set)
@@ -2466,35 +2493,35 @@ class App:
         chart_outer = tk.Frame(strip, bg=BORDER)
         chart_outer.grid(row=0, column=0, sticky="nsew", padx=(0, 8))
         chart_card = tk.Frame(chart_outer, bg=PANEL)
-        chart_card.pack(fill="both", expand=True, padx=1, pady=1)
+        chart_card.pack(fill="both", expand=True, padx=2, pady=2)
 
         chart_head = tk.Frame(chart_card, bg=PANEL, padx=10, pady=6)
         chart_head.pack(fill="x")
-        self.feed_card_title = tk.Label(chart_head, bg=PANEL, fg=MUTED, font=("Segoe UI", 8, "bold"))
+        self.feed_card_title = tk.Label(chart_head, bg=PANEL, fg=ACCENT, font=(MONO, 8, "bold"))
         self.feed_card_title.pack(side="left")
         price_box = tk.Frame(chart_head, bg=PANEL)
         price_box.pack(side="right")
-        self.last_price_cap = tk.Label(price_box, bg=PANEL, fg=MUTED, font=("Segoe UI", 7, "bold"), anchor="e")
+        self.last_price_cap = tk.Label(price_box, bg=PANEL, fg=MUTED, font=(MONO, 7, "bold"), anchor="e")
         self.last_price_cap.pack(anchor="e")
         self.last_price_val = tk.Label(price_box, text="—", bg=PANEL, fg=GREEN,
                                         font=("Consolas", 13, "bold"), anchor="e")
         self.last_price_val.pack(anchor="e")
 
-        self.spark_canvas = tk.Canvas(chart_card, bg=PANEL, height=120, highlightthickness=0)
+        self.spark_canvas = tk.Canvas(chart_card, bg=PANEL, height=104, highlightthickness=0)
         self.spark_canvas.pack(fill="both", expand=True, padx=10, pady=(0, 8))
         self.spark_placeholder = self.spark_canvas.create_text(
-            10, 60, anchor="w", fill=MUTED, font=("Segoe UI", 9), text=""
+            10, 60, anchor="w", fill=MUTED, font=(MONO, 9), text=""
         )
         self.spark_canvas.bind("<Configure>", lambda e: self._redraw_candles())
 
         feed_outer = tk.Frame(strip, bg=BORDER)
         feed_outer.grid(row=0, column=1, sticky="nsew")
         feed_card = tk.Frame(feed_outer, bg=PANEL)
-        feed_card.pack(fill="both", expand=True, padx=1, pady=1)
+        feed_card.pack(fill="both", expand=True, padx=2, pady=2)
 
         feed_head = tk.Frame(feed_card, bg=PANEL, padx=10, pady=6)
         feed_head.pack(fill="x")
-        self.trades_title = tk.Label(feed_head, bg=PANEL, fg=MUTED, font=("Segoe UI", 8, "bold"))
+        self.trades_title = tk.Label(feed_head, bg=PANEL, fg=ACCENT, font=(MONO, 8, "bold"))
         self.trades_title.pack(side="left")
 
         table_frame = tk.Frame(feed_card, bg=PANEL)
@@ -2502,7 +2529,7 @@ class App:
 
         columns = ("time", "type", "wallet", "amount", "value", "tx")
         self.tree = ttk.Treeview(table_frame, columns=columns, show="headings",
-                                  style="Treeview", height=6)
+                                  style="Treeview", height=5)
         for col, w, anchor in [
             ("time", 62, "center"), ("type", 78, "center"), ("wallet", 130, "w"),
             ("amount", 110, "e"), ("value", 90, "e"), ("tx", 110, "w"),
@@ -2510,10 +2537,10 @@ class App:
             self.tree.column(col, width=w, anchor=anchor, stretch=(col in ("wallet", "tx")))
         # два оттенка на каждый тип — соседние строки чуть отличаются фоном,
         # иначе длинная лента сливается в сплошное цветное полотно
-        self.tree.tag_configure("buy", foreground=GREEN, background="#0d1f16")
-        self.tree.tag_configure("buy_alt", foreground=GREEN, background="#11291d")
-        self.tree.tag_configure("sell", foreground=RED, background="#220f13")
-        self.tree.tag_configure("sell_alt", foreground=RED, background="#2b1419")
+        self.tree.tag_configure("buy", foreground=GREEN, background=ROW_BUY)
+        self.tree.tag_configure("buy_alt", foreground=GREEN, background=ROW_BUY_ALT)
+        self.tree.tag_configure("sell", foreground=RED, background=ROW_SELL)
+        self.tree.tag_configure("sell_alt", foreground=RED, background=ROW_SELL_ALT)
         self.tree.bind("<Double-Button-1>", self.on_row_double_click)
         self.tree.bind("<Motion>", self.on_row_hover)
 
@@ -2535,7 +2562,7 @@ class App:
         for code, btn in self.lang_buttons.items():
             active = code == self.tr.lang
             btn.configure(bg=ACCENT if active else PANEL2,
-                           fg="#0a0c10" if active else MUTED)
+                           fg=ON_ACCENT if active else MUTED)
 
     def retranslate(self):
         t = self.tr.t
