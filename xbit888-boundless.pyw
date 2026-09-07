@@ -91,6 +91,10 @@ TR = {
     "log_dexscreener_error": {"ru": "Не удалось обратиться к Dexscreener: {e}",
                                "en": "Could not reach Dexscreener: {e}",
                                "zh": "无法连接 Dexscreener: {e}"},
+    "log_rpc_discovery": {
+        "ru": "Dexscreener токен ещё не знает — ищу пул напрямую в блокчейне...",
+        "en": "Dexscreener doesn't know this token yet — looking for the pool on-chain...",
+        "zh": "Dexscreener 尚未收录该代币——正在链上直接查找资金池..."},
     "log_no_pair": {"ru": "Нет торговой пары для этого адреса (токен новый / нет ликвидности).",
                      "en": "No trading pair found for this address (new token / no liquidity).",
                      "zh": "未找到该地址的交易对（代币过新或无流动性）。"},
@@ -116,6 +120,14 @@ TR = {
                          "en": "Watching Uniswap V4 pool: {addr}",
                          "zh": "正在监控 Uniswap V4 资金池：{addr}"},
     "log_poolmanager_label": {"ru": "PoolManager: {addr}", "en": "PoolManager: {addr}", "zh": "PoolManager: {addr}"},
+    "log_rpc_throttled": {
+        "ru": "RPC ограничивает частоту — временно снизил опрос до {interval}с (вернусь к заданной, когда отпустит)",
+        "en": "RPC is rate-limiting — temporarily slowed polling to {interval}s (will speed back up)",
+        "zh": "RPC 触发频率限制——暂时将轮询降至 {interval} 秒（稍后自动恢复）"},
+    "log_rpc_recovered": {
+        "ru": "RPC отпустил — вернул опрос к {interval}с",
+        "en": "RPC recovered — polling back at {interval}s",
+        "zh": "RPC 已恢复——轮询回到 {interval} 秒"},
     "log_rpc_error": {"ru": "Ошибка RPC ({e}), повтор через {interval}с",
                        "en": "RPC error ({e}), retrying in {interval}s",
                        "zh": "RPC 错误（{e}），{interval} 秒后重试"},
@@ -166,6 +178,10 @@ TR = {
     "bundle_no_history": {"ru": "Не удалось найти историю сделок для этого адреса.",
                            "en": "Could not find trade history for this address.",
                            "zh": "未能找到该地址的交易历史。"},
+    "bundle_rpc_blocked": {
+        "ru": "Публичный RPC ограничил запросы — данные не дочитались. Вставьте свой RPC в поле сверху, и анализ пройдёт целиком.",
+        "en": "The public RPC rate-limited us, so the data couldn't be read in full. Paste your own RPC above and it will complete.",
+        "zh": "公共 RPC 触发频率限制，数据未能完整读取。请在上方填入自己的 RPC 后重试。"},
     "bundle_no_early_buys": {"ru": "В окне запуска не найдено ни одной покупки.",
                               "en": "No buys found in the launch window.",
                               "zh": "在上线窗口内未发现任何买入。"},
@@ -854,81 +870,144 @@ def _scan_evm_logs(rpc_url, address, topics, start_block, window_seconds, block_
     return logs
 
 
+def evm_get_total_supply(rpc_url, token_address):
+    """totalSupply() напрямую с контракта — не зависит от индексаторов."""
+    result = evm_rpc_call(rpc_url, "eth_call", [{"to": token_address, "data": "0x18160ddd"}, "latest"])
+    return int(result, 16) if result and result != "0x" else 0
+
+
+def fetch_all_pool_swaps(rpc_url, pool_manager, pool_id, lookback_blocks=1_500_000, stop_event=None):
+    """Забирает ВСЕ свопы конкретного пула. Фильтр по poolId делает выборку маленькой,
+    поэтому обычно хватает одного запроса на широкий диапазон; если RPC упрётся в лимит
+    по числу логов — доберём частями."""
+    try:
+        latest = int(evm_rpc_call(rpc_url, "eth_blockNumber", []), 16)
+    except Exception:
+        return [], None, True
+    floor = max(0, latest - lookback_blocks)
+    topics = [UNISWAP_V4_SWAP_TOPIC, pool_id]
+
+    logs = evm_get_logs_retry(rpc_url, {
+        "address": pool_manager, "topics": topics,
+        "fromBlock": hex(floor), "toBlock": hex(latest),
+    })
+    if logs:
+        return sorted(logs, key=lambda l: int(l["blockNumber"], 16)), latest, False
+
+    logs = []
+    failures = 0
+    chunks = 0
+    cur = floor
+    chunk = 100_000
+    while cur <= latest:
+        if stop_event is not None and stop_event.is_set():
+            break
+        to_block = min(cur + chunk, latest)
+        chunks += 1
+        try:
+            batch = evm_rpc_call(rpc_url, "eth_getLogs", [{
+                "address": pool_manager, "topics": topics,
+                "fromBlock": hex(cur), "toBlock": hex(to_block),
+            }])
+            logs.extend(batch or [])
+        except Exception:
+            failures += 1
+        cur = to_block + 1
+
+    # пустой результат при сплошных ошибках — это не "сделок нет", а лимит RPC;
+    # различаем, чтобы не показывать пользователю неверную причину
+    rpc_blocked = not logs and failures > 0 and failures >= chunks / 2
+    return sorted(logs, key=lambda l: int(l["blockNumber"], 16)), latest, rpc_blocked
+
+
 def check_evm_bundles(ca, chain_id, info, rpc_url, window_seconds, emit, tr, stop_event, max_wallets=25):
+    """Ищет скоординированные закупы в первые секунды жизни пула.
+
+    Не опирается на Dexscreener: пул находится по логам самого токена, момент запуска —
+    это первый Swap в пуле, а общее предложение берётся с контракта. Для токенов с GMGN,
+    которых в Dexscreener ещё нет, это единственный рабочий путь."""
     emit("info", tr.t("bundle_scanning_launch"))
 
-    pair_address = info["pairAddress"]
-    created_at_ms = info.get("pairCreatedAt")
-    if not created_at_ms:
-        emit("bundle_result", {"error": tr.t("bundle_no_history")})
+    pool_manager = pool_id = quote_address = None
+    if info and info.get("pairAddress") and len(info["pairAddress"]) == 66:
+        pool_id = info["pairAddress"]
+        pool_manager = find_uniswap_v4_pool_manager(rpc_url, ca)
+        quote_address = (info.get("quoteToken") or {}).get("address")
+    if not pool_manager or not pool_id:
+        discovered = discover_evm_pool_via_rpc(rpc_url, ca)
+        if not discovered:
+            emit("bundle_result", {"error": tr.t("log_v4_poolmanager_not_found")})
+            return
+        pool_manager = discovered["pool_manager"]
+        pool_id = discovered["pool_id"]
+        quote_address = quote_address or discovered.get("quote_token")
+
+    if not quote_address:
+        emit("bundle_result", {"error": tr.t("bundle_no_pair")})
         return
-    target_ts = created_at_ms / 1000
 
     try:
         decimals = evm_get_decimals(rpc_url, ca)
     except Exception:
         decimals = 18
-
-    total_supply = 0
     try:
-        price_usd = float(info["priceUsd"]) if info.get("priceUsd") else None
-        mcap_usd = float(info["marketCapUsd"]) if info.get("marketCapUsd") else None
-        if price_usd and mcap_usd:
-            total_supply = mcap_usd / price_usd
-    except (TypeError, ValueError, ZeroDivisionError):
-        pass
+        total_supply = evm_get_total_supply(rpc_url, ca) / (10 ** decimals)
+    except Exception:
+        total_supply = 0
 
-    try:
-        start_block, block_time, latest_block = evm_estimate_block_by_timestamp(rpc_url, target_ts)
-    except Exception as e:
-        emit("bundle_result", {"error": tr.t("log_block_number_error", e=e)})
+    swaps, _latest, rpc_blocked = fetch_all_pool_swaps(rpc_url, pool_manager, pool_id,
+                                                       stop_event=stop_event)
+    if not swaps:
+        key = "bundle_rpc_blocked" if rpc_blocked else "bundle_no_history"
+        emit("bundle_result", {"error": tr.t(key)})
         return
 
-    per_wallet = {}
-
-    if len(pair_address) == 66:
-        pool_manager = find_uniswap_v4_pool_manager(rpc_url, ca)
-        if not pool_manager:
-            emit("bundle_result", {"error": tr.t("log_v4_poolmanager_not_found")})
-            return
-        quote_address = info["quoteToken"].get("address")
-        is_token0 = int(ca, 16) < int(quote_address, 16)
-
-        logs = _scan_evm_logs(rpc_url, pool_manager, [UNISWAP_V4_SWAP_TOPIC, pair_address],
-                               start_block, window_seconds, block_time, latest_block, stop_event=stop_event)
-        buys_by_tx = {}
-        for lg in logs:
-            amount0 = evm_word_signed(lg["data"], 0)
-            amount1 = evm_word_signed(lg["data"], 1)
-            our_amount = amount0 if is_token0 else amount1
-            if our_amount > 0:  # положительное = трейдер получает наш токен = покупка
-                buys_by_tx[lg["transactionHash"]] = our_amount / (10 ** decimals)
-
-        for tx_hash, amount in buys_by_tx.items():
-            if stop_event.is_set():
-                return
-            try:
-                tx = evm_rpc_call(rpc_url, "eth_getTransactionByHash", [tx_hash])
-                wallet = tx.get("from") if tx else None
-            except Exception:
-                wallet = None
-            if wallet:
-                per_wallet[wallet] = per_wallet.get(wallet, 0.0) + amount
-            time.sleep(0.15)
+    # первый своп пула = момент запуска. Время блока меряем прямо по двум блокам:
+    # на быстрых сетях (у Robinhood ~0.1с) ошибка здесь сразу сужает окно в разы.
+    first_block = int(swaps[0]["blockNumber"], 16)
+    launch_ts = evm_block_timestamp(rpc_url, first_block) or 0
+    later_ts = evm_block_timestamp(rpc_url, first_block + 5000)
+    if launch_ts and later_ts and later_ts > launch_ts:
+        block_time = (later_ts - launch_ts) / 5000
     else:
-        pair_topic = evm_pad_address_topic(pair_address)
-        logs = _scan_evm_logs(rpc_url, ca, [TRANSFER_TOPIC], start_block, window_seconds,
-                               block_time, latest_block, stop_event=stop_event)
-        for lg in logs:
-            topics = lg.get("topics") or []
-            if len(topics) < 3 or topics[1].lower() != pair_topic.lower():
-                continue  # интересуют только переводы ИЗ пула трейдеру, т.е. покупки
-            wallet = evm_topic_to_address(topics[2])
-            amount = int(lg.get("data", "0x0"), 16) / (10 ** decimals)
-            per_wallet[wallet] = per_wallet.get(wallet, 0.0) + amount
+        block_time = 0.1  # разумная оценка для L2 — лучше, чем сузить окно в 10 раз
+    window_blocks = max(1, int(window_seconds / max(block_time, 0.001)))
+    last_block_in_window = first_block + window_blocks
+
+    is_token0 = int(ca, 16) < int(quote_address, 16)
+    buys_by_tx = {}
+    for lg in swaps:
+        if int(lg["blockNumber"], 16) > last_block_in_window:
+            break
+        amount0 = evm_word_signed(lg["data"], 0)
+        amount1 = evm_word_signed(lg["data"], 1)
+        our_amount = amount0 if is_token0 else amount1
+        if our_amount > 0:  # положительное = трейдер получает наш токен = покупка
+            buys_by_tx[lg["transactionHash"]] = buys_by_tx.get(lg["transactionHash"], 0.0) + \
+                our_amount / (10 ** decimals)
+
+    per_wallet = {}
+    if buys_by_tx:
+        tx_hashes = list(buys_by_tx.keys())
+        with concurrent.futures.ThreadPoolExecutor(max_workers=6) as pool:
+            future_map = {
+                pool.submit(evm_rpc_call, rpc_url, "eth_getTransactionByHash", [h]): h
+                for h in tx_hashes
+            }
+            for fut in concurrent.futures.as_completed(future_map):
+                if stop_event.is_set():
+                    return
+                tx_hash = future_map[fut]
+                try:
+                    tx = fut.result()
+                except Exception:
+                    continue
+                wallet = tx.get("from") if tx else None
+                if wallet:
+                    per_wallet[wallet] = per_wallet.get(wallet, 0.0) + buys_by_tx[tx_hash]
 
     funder_unsupported = chain_id not in BLOCKSCOUT_API_BASE
-    _finish_bundle_check(per_wallet, total_supply, int(target_ts), False, window_seconds,
+    _finish_bundle_check(per_wallet, total_supply, launch_ts, False, window_seconds,
                           lambda w: evm_find_wallet_funder(chain_id, w), emit, tr, stop_event,
                           max_wallets, funder_unsupported=funder_unsupported)
 
@@ -938,12 +1017,25 @@ def run_bundle_check(ca, emit, tr, stop_event, window_seconds=BUNDLE_WINDOW_SECO
     fmt = detect_chain_by_format(ca)
     if fmt == "evm":
         emit("info", tr.t("bundle_checking"))
-        info = fetch_dexscreener_info(ca)
-        if not info or not info.get("pairAddress"):
-            emit("bundle_result", {"error": tr.t("bundle_no_pair")})
-            return
-        chain_id = (info.get("chainId") or "").lower()
-        rpc_url = rpc_override or DEFAULT_EVM_RPCS.get(chain_id, DEFAULT_EVM_RPCS["ethereum"])
+        try:
+            info = fetch_dexscreener_info(ca)
+        except Exception:
+            info = None
+
+        if info and info.get("chainId"):
+            chain_id = (info["chainId"] or "").lower()
+            rpc_url = rpc_override or DEFAULT_EVM_RPCS.get(chain_id, DEFAULT_EVM_RPCS["ethereum"])
+        elif rpc_override:
+            chain_id, rpc_url = "custom", rpc_override
+        else:
+            # токена нет в Dexscreener (типичная ситуация для свежих с GMGN) —
+            # определяем сеть по наличию контракта и работаем напрямую через RPC
+            emit("info", tr.t("log_rpc_discovery"))
+            chain_id, rpc_url = detect_evm_chain_for_token(ca)
+            if not rpc_url:
+                emit("bundle_result", {"error": tr.t("bundle_no_pair")})
+                return
+
         check_evm_bundles(ca, chain_id, info, rpc_url, window_seconds, emit, tr, stop_event)
         return
     if fmt != "solana":
@@ -1107,6 +1199,139 @@ def watch_evm(ca, chain_id, pair_address, rpc_url, interval, emit, stop_event, t
         stop_event.wait(interval)
 
 
+def evm_block_timestamp(rpc_url, block_number, tries=3):
+    """Время блока с ретраями — на нём считается окно запуска, ошибиться нельзя."""
+    for attempt in range(tries):
+        try:
+            blk = evm_rpc_call(rpc_url, "eth_getBlockByNumber", [hex(block_number), False])
+            if blk and blk.get("timestamp"):
+                return int(blk["timestamp"], 16)
+            return None
+        except Exception:
+            if attempt < tries - 1:
+                time.sleep(0.4 * (attempt + 1))
+    return None
+
+
+def evm_get_logs_retry(rpc_url, params, tries=4):
+    """eth_getLogs с ретраями: публичные RPC часто отвечают 429, а без повтора
+    одна такая ошибка молча обнуляла поиск пула. Паузы растут (0.6/1.2/2.4с),
+    чтобы пережить короткий эпизод троттлинга, а не сдаться на первой же ошибке."""
+    for attempt in range(tries):
+        try:
+            return evm_rpc_call(rpc_url, "eth_getLogs", [params]) or []
+        except Exception:
+            if attempt < tries - 1:
+                time.sleep(0.6 * (2 ** attempt))
+    return []
+
+
+def evm_decode_string(hex_result):
+    """Декодирует ABI-строку из ответа eth_call (name()/symbol())."""
+    if not hex_result or hex_result == "0x":
+        return ""
+    raw = bytes.fromhex(hex_result[2:])
+    try:
+        if len(raw) >= 64:  # динамическая строка: offset + length + данные
+            length = int.from_bytes(raw[32:64], "big")
+            if 0 < length <= len(raw) - 64:
+                return raw[64:64 + length].decode("utf-8", "replace").strip("\x00")
+        return raw.decode("utf-8", "replace").strip("\x00").strip()
+    except Exception:
+        return ""
+
+
+def evm_get_token_identity(rpc_url, token_address):
+    """name()/symbol() напрямую с контракта — нужно, когда Dexscreener токен ещё не знает."""
+    name = symbol = ""
+    try:
+        name = evm_decode_string(
+            evm_rpc_call(rpc_url, "eth_call", [{"to": token_address, "data": "0x06fdde03"}, "latest"]))
+    except Exception:
+        pass
+    try:
+        symbol = evm_decode_string(
+            evm_rpc_call(rpc_url, "eth_call", [{"to": token_address, "data": "0x95d89b41"}, "latest"]))
+    except Exception:
+        pass
+    return name, symbol
+
+
+def detect_evm_chain_for_token(token_address, candidate_chains=("robinhood", "base", "ethereum", "bsc", "arbitrum")):
+    """Когда Dexscreener молчит, сеть неизвестна — проверяем, на какой из известных
+    сетей по этому адресу вообще есть контракт."""
+    for chain_id in candidate_chains:
+        rpc_url = DEFAULT_EVM_RPCS.get(chain_id)
+        if not rpc_url:
+            continue
+        try:
+            code = evm_rpc_call(rpc_url, "eth_getCode", [token_address, "latest"])
+            if code and code != "0x":
+                return chain_id, rpc_url
+        except Exception:
+            continue
+    return None, None
+
+
+def discover_evm_pool_via_rpc(rpc_url, token_address, lookback_blocks=100000,
+                               chunk_blocks=5000, max_checked=25):
+    """Находит пул Uniswap V4 для токена без Dexscreener: берём недавние переводы
+    токена, смотрим их чеки и вытаскиваем из события Swap и адрес PoolManager,
+    и сам poolId, а из переводов в той же транзакции — второй токен пары."""
+    try:
+        latest = int(evm_rpc_call(rpc_url, "eth_blockNumber", []), 16)
+    except Exception:
+        return None
+
+    logs = []
+    floor = max(0, latest - lookback_blocks)
+    cur_to = latest
+    while cur_to > floor and len(logs) < max_checked * 3:
+        cur_from = max(floor, cur_to - chunk_blocks)
+        logs.extend(evm_get_logs_retry(rpc_url, {
+            "address": token_address, "topics": [TRANSFER_TOPIC],
+            "fromBlock": hex(cur_from), "toBlock": hex(cur_to),
+        }))
+        cur_to = cur_from - 1
+
+    seen_tx = set()
+    checked = 0
+    for lg in reversed(logs):
+        tx_hash = lg.get("transactionHash")
+        if not tx_hash or tx_hash in seen_tx or checked >= max_checked:
+            continue
+        seen_tx.add(tx_hash)
+        checked += 1
+        try:
+            receipt = evm_rpc_call(rpc_url, "eth_getTransactionReceipt", [tx_hash])
+        except Exception:
+            continue
+
+        receipt_logs = (receipt or {}).get("logs", [])
+        swap = next((rl for rl in receipt_logs
+                     if rl.get("topics") and rl["topics"][0].lower() == UNISWAP_V4_SWAP_TOPIC.lower()), None)
+        if not swap:
+            continue
+
+        pool_manager = swap["address"]
+        pool_id = swap["topics"][1]
+        pm_topic = evm_pad_address_topic(pool_manager).lower()
+
+        quote_token = None
+        for rl in receipt_logs:
+            if (rl.get("address") or "").lower() == token_address.lower():
+                continue
+            topics = rl.get("topics") or []
+            if len(topics) < 3 or topics[0].lower() != TRANSFER_TOPIC.lower():
+                continue
+            if topics[1].lower() == pm_topic or topics[2].lower() == pm_topic:
+                quote_token = rl["address"]
+                break
+
+        return {"pool_manager": pool_manager, "pool_id": pool_id, "quote_token": quote_token}
+    return None
+
+
 def find_uniswap_v4_pool_manager(rpc_url, token_address, lookback_blocks=100000, max_checked=60,
                                   chunk_blocks=5000):
     try:
@@ -1156,6 +1381,39 @@ def find_uniswap_v4_pool_manager(rpc_url, token_address, lookback_blocks=100000,
 _wallet_queue = queue.Queue()
 _wallet_worker_lock = threading.Lock()
 _wallet_worker_started = False
+
+
+class Pacer:
+    """Держит заданный интервал опроса, но при ошибках RPC (обычно 429) временно
+    замедляется и потом сам возвращается к заданной частоте. Сообщение о замедлении
+    пишем один раз на эпизод, а не на каждую ошибку — иначе лог превращается в спам."""
+
+    def __init__(self, interval, emit, tr, max_delay=8.0):
+        self.base = interval
+        self.delay = interval
+        self.max_delay = max(max_delay, interval)
+        self.emit = emit
+        self.tr = tr
+        self._throttled = False
+        self._ok_streak = 0
+
+    def on_error(self, err):
+        self.delay = min(max(self.delay * 2, 0.5), self.max_delay)
+        self._ok_streak = 0
+        if not self._throttled:
+            self._throttled = True
+            self.emit("error", self.tr.t("log_rpc_throttled", interval=round(self.delay, 1)))
+
+    def on_success(self):
+        if self.delay <= self.base:
+            return
+        self._ok_streak += 1
+        if self._ok_streak >= 5:  # уверенно отпустило — возвращаем прежний темп
+            self.delay = max(self.base, self.delay / 2)
+            self._ok_streak = 0
+            if self.delay <= self.base and self._throttled:
+                self._throttled = False
+                self.emit("info", self.tr.t("log_rpc_recovered", interval=self.base))
 
 
 def _wallet_resolver_worker():
@@ -1211,16 +1469,16 @@ def watch_evm_v4(ca, chain_id, pool_manager, pool_id, quote_token_address, quote
         emit("error", tr.t("log_block_number_error", e=e))
         return
 
-    backoff = interval
-    max_backoff = max(interval * 10, 30)
+    # адаптивный темп: держим заданный интервал, но при лимитах RPC временно
+    # замедляемся и постепенно возвращаемся обратно — вместо спама ошибками
+    pace = Pacer(interval, emit, tr)
 
     while not stop_event.is_set():
         try:
             latest = int(evm_rpc_call(rpc_url, "eth_blockNumber", []), 16)
         except (urllib.error.URLError, TimeoutError, RuntimeError, json.JSONDecodeError) as e:
-            emit("error", tr.t("log_rpc_error", e=e, interval=round(backoff, 1)))
-            stop_event.wait(backoff)
-            backoff = min(backoff * 2, max_backoff)
+            pace.on_error(e)
+            stop_event.wait(pace.delay)
             continue
 
         if latest > last_block:
@@ -1230,12 +1488,11 @@ def watch_evm_v4(ca, chain_id, pool_manager, pool_id, quote_token_address, quote
                     "fromBlock": hex(last_block + 1), "toBlock": hex(latest),
                 }])
             except (urllib.error.URLError, TimeoutError, RuntimeError, json.JSONDecodeError) as e:
-                emit("error", tr.t("log_eth_getlogs_error", e=e, interval=round(backoff, 1)))
-                stop_event.wait(backoff)
-                backoff = min(backoff * 2, max_backoff)
+                pace.on_error(e)
+                stop_event.wait(pace.delay)
                 continue
 
-            backoff = interval  # успешный запрос — сбрасываем нарастающую паузу
+            pace.on_success()
 
             for lg in logs or []:
                 amount0 = evm_word_signed(lg["data"], 0)
@@ -1266,12 +1523,46 @@ def watch_evm_v4(ca, chain_id, pool_manager, pool_id, quote_token_address, quote
                 _resolve_wallet_async(rpc_url, chain_id, tx_hash, emit)
 
             last_block = latest
-        stop_event.wait(interval)
+        stop_event.wait(pace.delay)
 
 
 # ---------------------------------------------------------------------------
 # Оркестратор
 # ---------------------------------------------------------------------------
+
+def watch_evm_without_dexscreener(ca, interval, emit, stop_event, tr, rpc_override=None):
+    """Путь для токенов, которых Dexscreener ещё не знает: сеть определяем по наличию
+    контракта, пул — по логам Swap в недавних транзакциях токена."""
+    emit("info", tr.t("log_rpc_discovery"))
+
+    if rpc_override:
+        chain_id, rpc_url = "custom", rpc_override
+    else:
+        chain_id, rpc_url = detect_evm_chain_for_token(ca)
+        if not rpc_url:
+            emit("error", tr.t("log_no_pair"))
+            return
+
+    pool = discover_evm_pool_via_rpc(rpc_url, ca)
+    if not pool or not pool.get("quote_token"):
+        emit("error", tr.t("log_no_pair"))
+        return
+
+    name, symbol = evm_get_token_identity(rpc_url, ca)
+    emit("meta", {
+        "name": name or ca[:10], "symbol": symbol,
+        "network": chain_display_name(chain_id), "dex": "Uniswap V4",
+        "price": "", "liquidity": "",
+        # без Dexscreener нет якоря капитализации — показываем цену как есть,
+        # а не выдуманный MCAP
+        "mcap_anchor": None, "mcap_unit": "", "mcap_unit_is_prefix": True,
+        "price_native_anchor": None,
+    })
+    emit("info", tr.t("log_v4_detected", chain=chain_id))
+
+    watch_evm_v4(ca, chain_id, pool["pool_manager"], pool["pool_id"],
+                 pool["quote_token"], "", rpc_url, interval, emit, stop_event, tr)
+
 
 def run_watch(ca, interval, emit, stop_event, tr, rpc_override=None):
     ca = ca.strip()
@@ -1311,6 +1602,11 @@ def run_watch(ca, interval, emit, stop_event, tr, rpc_override=None):
         return
 
     if not info or not info.get("pairAddress"):
+        # Dexscreener индексирует новые токены с задержкой — у совсем свежих его данных
+        # ещё нет. Пробуем найти пул сами, напрямую через RPC.
+        if fmt == "evm":
+            watch_evm_without_dexscreener(ca, interval, emit, stop_event, tr, rpc_override)
+            return
         emit("error", tr.t("log_no_pair"))
         return
 
@@ -1520,15 +1816,22 @@ class App:
                          arrowcolor=TEXT, bordercolor=BORDER, padding=4)
         style.map("TCombobox", fieldbackground=[("readonly", PANEL2)])
 
+        # borderwidth+relief+*color гасят светлую рамку, которую clam рисует вокруг
+        # таблицы — на тёмной теме она выглядела как чужеродный белый прямоугольник
         style.configure("Treeview", background=PANEL, fieldbackground=PANEL, foreground=TEXT,
-                         rowheight=26, font=("Consolas", 10), borderwidth=0)
-        style.configure("Treeview.Heading", background=PANEL2, foreground=MUTED,
-                         font=("Segoe UI", 9, "bold"), borderwidth=0, relief="flat")
-        style.map("Treeview.Heading", background=[("active", PANEL2)])
-        style.map("Treeview", background=[("selected", "#0f2933")], foreground=[("selected", TEXT)])
+                         rowheight=24, font=("Consolas", 10), borderwidth=0, relief="flat",
+                         bordercolor=PANEL, lightcolor=PANEL, darkcolor=PANEL)
+        style.layout("Treeview", [("Treeview.treearea", {"sticky": "nswe"})])
+        style.configure("Treeview.Heading", background=BG, foreground=MUTED,
+                         font=("Segoe UI", 8, "bold"), borderwidth=0, relief="flat", padding=(6, 5))
+        style.map("Treeview.Heading", background=[("active", BG)], foreground=[("active", TEXT)])
+        style.map("Treeview", background=[("selected", "#12333d")], foreground=[("selected", TEXT)])
 
-        style.configure("Vertical.TScrollbar", background=PANEL2, troughcolor=BG, bordercolor=BG,
-                         arrowcolor=MUTED)
+        for sb in ("Vertical.TScrollbar", "TScrollbar"):
+            style.configure(sb, background=PANEL2, troughcolor=BG, bordercolor=BG,
+                             arrowcolor=MUTED, lightcolor=PANEL2, darkcolor=PANEL2,
+                             borderwidth=0, relief="flat", arrowsize=10)
+            style.map(sb, background=[("active", BORDER)])
 
     # -- layout ----------------------------------------------------------
     def _build_ui(self):
@@ -1575,14 +1878,26 @@ class App:
         self.header_sells_cap, self.header_sells_val = self._header_stat(stats_box, RED)
         self.header_clock_cap, self.header_clock_val = self._header_stat(stats_box, TEXT, last=True)
 
+        # сегментированный переключатель вместо выпадающего списка: три плитки,
+        # активная подсвечена акцентом — выпадашка выбивалась из тёмного интерфейса
         lang_box = tk.Frame(header, bg=BG)
-        lang_box.pack(side="right", padx=(0, 22))
-        self.lang_lbl = tk.Label(lang_box, bg=BG, fg=MUTED, font=("Segoe UI", 9))
+        lang_box.pack(side="right", padx=(0, 26))
+        self.lang_lbl = tk.Label(lang_box, bg=BG, fg=MUTED, font=("Segoe UI", 8, "bold"))
         self.lang_lbl.pack(anchor="e")
-        self.lang_combo = ttk.Combobox(lang_box, textvariable=self.lang_var, state="readonly",
-                                        values=[LANG_NAMES[c] for c in LANGS], width=6, justify="center")
-        self.lang_combo.pack(anchor="e", pady=(2, 0))
-        self.lang_combo.bind("<<ComboboxSelected>>", self.on_lang_change)
+
+        seg = tk.Frame(lang_box, bg=BORDER)
+        seg.pack(anchor="e", pady=(3, 0))
+        seg_inner = tk.Frame(seg, bg=PANEL2)
+        seg_inner.pack(padx=1, pady=1)
+
+        self.lang_buttons = {}
+        for code in LANGS:
+            btn = tk.Label(seg_inner, text=LANG_NAMES[code], bg=PANEL2, fg=MUTED,
+                            font=("Segoe UI", 9, "bold"), padx=10, pady=3, cursor="hand2")
+            btn.pack(side="left")
+            btn.bind("<Button-1>", lambda e, c=code: self.set_language(c))
+            self.lang_buttons[code] = btn
+        self._refresh_lang_buttons()
 
         tk.Frame(self.root, bg=BORDER, height=1).pack(fill="x", padx=18)
 
@@ -1609,7 +1924,7 @@ class App:
         interval_col.pack(side="left", padx=(12, 0))
         self.interval_label_lbl = ttk.Label(interval_col, style="Muted.TLabel")
         self.interval_label_lbl.pack(anchor="w")
-        self.interval_var = tk.StringVar(value="1")
+        self.interval_var = tk.StringVar(value="0.1")
         ttk.Entry(interval_col, textvariable=self.interval_var, width=6, font=("Consolas", 11),
                   justify="center").pack(pady=(2, 0))
 
@@ -1813,8 +2128,12 @@ class App:
             ("amount", 110, "e"), ("value", 90, "e"), ("tx", 110, "w"),
         ]:
             self.tree.column(col, width=w, anchor=anchor, stretch=(col in ("wallet", "tx")))
-        self.tree.tag_configure("buy", foreground=GREEN, background="#0f2419")
-        self.tree.tag_configure("sell", foreground=RED, background="#2a1116")
+        # два оттенка на каждый тип — соседние строки чуть отличаются фоном,
+        # иначе длинная лента сливается в сплошное цветное полотно
+        self.tree.tag_configure("buy", foreground=GREEN, background="#0d1f16")
+        self.tree.tag_configure("buy_alt", foreground=GREEN, background="#11291d")
+        self.tree.tag_configure("sell", foreground=RED, background="#220f13")
+        self.tree.tag_configure("sell_alt", foreground=RED, background="#2b1419")
         self.tree.bind("<Double-Button-1>", self.on_row_double_click)
         self.tree.bind("<Motion>", self.on_row_hover)
 
@@ -1874,10 +2193,19 @@ class App:
         self.stat_net_hint.pack(anchor="w", pady=(2, 0))
 
     # -- i18n ------------------------------------------------------------
-    def on_lang_change(self, _evt=None):
-        code_by_name = {v: k for k, v in LANG_NAMES.items()}
-        self.tr.lang = code_by_name.get(self.lang_var.get(), "ru")
+    def set_language(self, code):
+        if code not in LANG_NAMES:
+            return
+        self.tr.lang = code
+        self.lang_var.set(LANG_NAMES[code])
+        self._refresh_lang_buttons()
         self.retranslate()
+
+    def _refresh_lang_buttons(self):
+        for code, btn in self.lang_buttons.items():
+            active = code == self.tr.lang
+            btn.configure(bg=ACCENT if active else PANEL2,
+                           fg="#0a0c10" if active else MUTED)
 
     def retranslate(self):
         t = self.tr.t
@@ -1937,9 +2265,9 @@ class App:
         for row_id in self.tree.get_children():
             vals = list(self.tree.item(row_id, "values"))
             tags = self.tree.item(row_id, "tags")
-            if "buy" in tags:
+            if any(tag.startswith("buy") for tag in tags):
                 vals[1] = "▲ " + t("trade_buy")
-            elif "sell" in tags:
+            elif any(tag.startswith("sell") for tag in tags):
                 vals[1] = "▼ " + t("trade_sell")
             self.tree.item(row_id, values=vals)
 
@@ -2038,14 +2366,15 @@ class App:
     def add_trade_row(self, data):
         t = self.tr.t
         is_buy = data["is_buy"]
-        tag_type = "buy" if is_buy else "sell"
+        base_tag = "buy" if is_buy else "sell"
+        tag_type = base_tag if self._row_count % 2 == 0 else base_tag + "_alt"
         arrow = "▲" if is_buy else "▼"
         label = f"{arrow} " + (t("trade_buy") if is_buy else t("trade_sell"))
         self._row_count += 1
 
         wallet = data["wallet"]
-        wallet_short = wallet if len(wallet) <= 20 else f"{wallet[:10]}…{wallet[-6:]}"
-        tx_short = data["tx"] if len(data["tx"]) <= 22 else f"{data['tx'][:10]}…{data['tx'][-6:]}"
+        wallet_short = wallet if len(wallet) <= 18 else f"{wallet[:8]}…{wallet[-6:]}"
+        tx_short = data["tx"] if len(data["tx"]) <= 18 else f"{data['tx'][:8]}…{data['tx'][-6:]}"
         quote_amount = data.get("quote_amount") or ""
         quote_symbol = data.get("quote_symbol") or ""
         value_text = f"{quote_amount} {quote_symbol}".strip() if quote_amount else "—"
@@ -2245,13 +2574,12 @@ class App:
             self.status_var.set(self.tr.t("status_enter_ca"))
             return
         rpc_override = self.rpc_var.get().strip() or None
-        # на публичном RPC меньше 0.5с смысла нет — упрёмся в лимиты и станет только
-        # медленнее; со своим эндпоинтом можно опускаться до 0.1с
-        floor = 0.1 if rpc_override else 0.5
+        # 0.1с разрешаем всегда; если публичный RPC начнёт отдавать 429, цикл сам
+        # временно замедлится (адаптивный троттлинг) и вернётся к заданной частоте
         try:
-            interval = max(floor, float(self.interval_var.get()))
+            interval = max(0.1, float(self.interval_var.get()))
         except ValueError:
-            interval = 1.0
+            interval = 0.1
 
         self.clear()
         for field, (key, cap, val) in self.token_rows.items():
