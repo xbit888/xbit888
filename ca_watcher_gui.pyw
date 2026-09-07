@@ -13,6 +13,7 @@ CA Watcher — live-трекер покупок/продаж токена по C
   - api.dexscreener.com — метаданные токена/пары после миграции на DEX
 """
 
+import concurrent.futures
 import json
 import queue
 import re
@@ -37,6 +38,15 @@ TR = {
     "ca_label": {"ru": "Адрес токена (CA)", "en": "Token address (CA)", "zh": "代币地址 (CA)"},
     "ca_placeholder": {"ru": "Вставьте CA и нажмите Пуск", "en": "Paste CA and press Start", "zh": "粘贴代币地址并点击开始"},
     "interval_label": {"ru": "Интервал, с", "en": "Interval, s", "zh": "刷新间隔(秒)"},
+    "rpc_label": {"ru": "Свой RPC (необязательно — снимает лимиты)",
+                   "en": "Custom RPC (optional — lifts rate limits)",
+                   "zh": "自定义 RPC（可选，可解除频率限制）"},
+    "stats_hint": {"ru": "за текущую сессию наблюдения",
+                    "en": "for the current watch session",
+                    "zh": "本次监控会话统计"},
+    "stat_buys_hint": {"ru": "сделок на покупку", "en": "buy trades", "zh": "买入笔数"},
+    "stat_sells_hint": {"ru": "сделок на продажу", "en": "sell trades", "zh": "卖出笔数"},
+    "stat_net_hint": {"ru": "покупки минус продажи", "en": "buy volume minus sell volume", "zh": "买入量减卖出量"},
     "start": {"ru": "▶ ПУСК", "en": "▶ START", "zh": "▶ 开始"},
     "stop": {"ru": "■ СТОП", "en": "■ STOP", "zh": "■ 停止"},
     "clear": {"ru": "Очистить", "en": "Clear", "zh": "清除"},
@@ -531,6 +541,38 @@ def solana_get_token_supply(rpc_url, mint):
     return float(value.get("uiAmountString") or 0)
 
 
+def _get_signatures_with_retry(rpc_url, address, limit, before=None, tries=3):
+    """getSignaturesForAddress с ретраями. Без этого одиночный 429 от публичного RPC
+    обрывал весь анализ бандлов необработанным исключением."""
+    for attempt in range(tries):
+        try:
+            return solana_get_signatures(rpc_url, address, limit=limit, before=before)
+        except (urllib.error.URLError, TimeoutError, json.JSONDecodeError):
+            if attempt < tries - 1:
+                time.sleep(0.6 * (attempt + 1))
+    return []
+
+
+def _fetch_transactions_parallel(rpc_url, signatures, stop_event, workers=6):
+    """Тянет транзакции окна запуска в несколько потоков. Последовательно с паузами
+    это занимало десятки секунд — а анализ бандлов должен быть быстрым."""
+    results = []
+    if not signatures:
+        return results
+    with concurrent.futures.ThreadPoolExecutor(max_workers=workers) as pool:
+        futures = [pool.submit(_get_transaction_with_retry, rpc_url, sig) for sig in signatures]
+        for fut in concurrent.futures.as_completed(futures):
+            if stop_event.is_set():
+                break
+            try:
+                tx = fut.result()
+            except Exception:
+                tx = None
+            if tx:
+                results.append(tx)
+    return results
+
+
 def _get_transaction_with_retry(rpc_url, signature, tries=3):
     """getTransaction с ретраями — публичный RPC часто отдаёт 429 под нагрузкой."""
     for attempt in range(tries):
@@ -549,7 +591,7 @@ def find_early_signatures(rpc_url, address, window_seconds, max_pages=15, page_s
     all_sigs = []
     before = None
     for _ in range(max_pages):
-        batch = solana_get_signatures(rpc_url, address, limit=page_size, before=before)
+        batch = _get_signatures_with_retry(rpc_url, address, page_size, before)
         if not batch:
             break
         all_sigs.extend(batch)
@@ -573,7 +615,7 @@ def find_wallet_funder(rpc_url, wallet, max_pages=5, page_size=100):
     before = None
     oldest_batch = None
     for _ in range(max_pages):
-        batch = solana_get_signatures(rpc_url, wallet, limit=page_size, before=before)
+        batch = _get_signatures_with_retry(rpc_url, wallet, page_size, before)
         if not batch:
             break
         oldest_batch = batch
@@ -606,16 +648,10 @@ def check_pumpfun_bundles(mint, curve_pda, assoc_curve, decimals, total_supply, 
         return
 
     per_wallet = {}
-    for s in early_sigs:
-        if stop_event.is_set():
-            return
-        tx = _get_transaction_with_retry(rpc_url, s["signature"])
-        if not tx:
-            continue
+    for tx in _fetch_transactions_parallel(rpc_url, [s["signature"] for s in early_sigs], stop_event):
         trade = pumpfun_extract_trade(tx, curve_pda, assoc_curve, decimals)
         if trade and trade["is_buy"]:
             per_wallet[trade["wallet"]] = per_wallet.get(trade["wallet"], 0.0) + trade["token_amount"]
-        time.sleep(0.15)
 
     _finish_bundle_check(per_wallet, total_supply, launch_time, hit_cap, window_seconds,
                           lambda w: find_wallet_funder(rpc_url, w), emit, tr, stop_event, max_wallets)
@@ -630,15 +666,9 @@ def check_solana_dex_bundles(mint, pair_address, decimals, total_supply, rpc_url
         return
 
     per_wallet = {}
-    for s in early_sigs:
-        if stop_event.is_set():
-            return
-        tx = _get_transaction_with_retry(rpc_url, s["signature"])
-        if not tx:
-            continue
+    for tx in _fetch_transactions_parallel(rpc_url, [s["signature"] for s in early_sigs], stop_event):
         for owner, amount in solana_extract_buys(tx, mint, pool_owner_hint=pair_address):
             per_wallet[owner] = per_wallet.get(owner, 0.0) + amount
-        time.sleep(0.15)
 
     _finish_bundle_check(per_wallet, total_supply, launch_time, hit_cap, window_seconds,
                           lambda w: find_wallet_funder(rpc_url, w), emit, tr, stop_event, max_wallets)
@@ -655,11 +685,19 @@ def _finish_bundle_check(per_wallet, total_supply, launch_time, hit_cap, window_
 
     funders = {}
     if not funder_unsupported:
-        for wallet, _amount in wallets_by_size:
-            if stop_event.is_set():
-                return
-            funders[wallet] = funder_fn(wallet)
-            time.sleep(0.2)  # не долбим публичный RPC/API подряд без пауз
+        # параллельно, но небольшим пулом: последовательный обход с паузами
+        # растягивал проверку на десятки секунд
+        wallets = [w for w, _a in wallets_by_size]
+        with concurrent.futures.ThreadPoolExecutor(max_workers=5) as pool:
+            future_map = {pool.submit(funder_fn, w): w for w in wallets}
+            for fut in concurrent.futures.as_completed(future_map):
+                if stop_event.is_set():
+                    return
+                wallet = future_map[fut]
+                try:
+                    funders[wallet] = fut.result()
+                except Exception:
+                    funders[wallet] = None
 
     clusters = {}
     for wallet, funder in funders.items():
@@ -868,7 +906,7 @@ def check_evm_bundles(ca, chain_id, info, rpc_url, window_seconds, emit, tr, sto
                           max_wallets, funder_unsupported=funder_unsupported)
 
 
-def run_bundle_check(ca, emit, tr, stop_event, window_seconds=BUNDLE_WINDOW_SECONDS):
+def run_bundle_check(ca, emit, tr, stop_event, window_seconds=BUNDLE_WINDOW_SECONDS, rpc_override=None):
     ca = ca.strip()
     fmt = detect_chain_by_format(ca)
     if fmt == "evm":
@@ -878,7 +916,7 @@ def run_bundle_check(ca, emit, tr, stop_event, window_seconds=BUNDLE_WINDOW_SECO
             emit("bundle_result", {"error": tr.t("bundle_no_pair")})
             return
         chain_id = (info.get("chainId") or "").lower()
-        rpc_url = DEFAULT_EVM_RPCS.get(chain_id, DEFAULT_EVM_RPCS["ethereum"])
+        rpc_url = rpc_override or DEFAULT_EVM_RPCS.get(chain_id, DEFAULT_EVM_RPCS["ethereum"])
         check_evm_bundles(ca, chain_id, info, rpc_url, window_seconds, emit, tr, stop_event)
         return
     if fmt != "solana":
@@ -886,7 +924,7 @@ def run_bundle_check(ca, emit, tr, stop_event, window_seconds=BUNDLE_WINDOW_SECO
         return
 
     pf_info = fetch_pumpfun_info(ca)
-    rpc_url = DEFAULT_SOLANA_RPC
+    rpc_url = rpc_override or DEFAULT_SOLANA_RPC
     if pf_info and verify_pumpfun_curve(rpc_url, pf_info["bonding_curve"]):
         decimals = pf_info.get("base_decimals", 6)
         total_supply = (pf_info.get("total_supply") or 0) / (10 ** decimals)
@@ -1208,7 +1246,7 @@ def watch_evm_v4(ca, chain_id, pool_manager, pool_id, quote_token_address, quote
 # Оркестратор
 # ---------------------------------------------------------------------------
 
-def run_watch(ca, interval, emit, stop_event, tr):
+def run_watch(ca, interval, emit, stop_event, tr, rpc_override=None):
     ca = ca.strip()
     fmt = detect_chain_by_format(ca)
     if not fmt:
@@ -1218,7 +1256,7 @@ def run_watch(ca, interval, emit, stop_event, tr):
     if fmt == "solana":
         emit("info", tr.t("log_checking_pumpfun", ca=ca))
         pf_info = fetch_pumpfun_info(ca)
-        rpc_url = DEFAULT_SOLANA_RPC
+        rpc_url = rpc_override or DEFAULT_SOLANA_RPC
         if pf_info and not pf_info.get("complete") and verify_pumpfun_curve(rpc_url, pf_info["bonding_curve"]):
             pf_decimals = pf_info.get("base_decimals", 6)
             mcap_anchor = pf_info.get("market_cap")
@@ -1272,9 +1310,10 @@ def run_watch(ca, interval, emit, stop_event, tr):
     })
 
     if chain_id == "solana" or fmt == "solana":
-        watch_solana(ca, pair_address, DEFAULT_SOLANA_RPC, interval, emit, stop_event, tr)
+        watch_solana(ca, pair_address, rpc_override or DEFAULT_SOLANA_RPC,
+                     interval, emit, stop_event, tr)
     elif fmt == "evm":
-        rpc_url = DEFAULT_EVM_RPCS.get(chain_id, DEFAULT_EVM_RPCS["ethereum"])
+        rpc_url = rpc_override or DEFAULT_EVM_RPCS.get(chain_id, DEFAULT_EVM_RPCS["ethereum"])
         if len(pair_address) == 66:
             emit("info", tr.t("log_v4_detected", chain=chain_id))
             pool_manager = find_uniswap_v4_pool_manager(rpc_url, ca)
@@ -1294,6 +1333,58 @@ def run_watch(ca, interval, emit, stop_event, tr):
 # ---------------------------------------------------------------------------
 # GUI — тёмная тема в стиле трейдинг-терминалов
 # ---------------------------------------------------------------------------
+
+# Логотип приложения, вшит прямо в файл (base64 PNG 44x44),
+# чтобы приложение оставалось одним файлом без внешних картинок.
+LOGO_PNG_B64 = (
+    "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"
+)
+
 
 BG = "#0a0c10"
 PANEL = "#12151c"
@@ -1418,7 +1509,19 @@ class App:
         header = tk.Frame(self.root, bg=BG)
         header.pack(fill="x", padx=18, pady=(14, 6))
 
-        brand_box = tk.Frame(header, bg=BG)
+        brand_wrap = tk.Frame(header, bg=BG)
+        brand_wrap.pack(side="left")
+
+        # логотип слева, название — правее него
+        self.logo_img = None
+        try:
+            self.logo_img = tk.PhotoImage(data=LOGO_PNG_B64)
+            tk.Label(brand_wrap, image=self.logo_img, bg=BG,
+                     borderwidth=0, highlightthickness=0).pack(side="left", padx=(0, 12))
+        except Exception:
+            pass  # без логотипа приложение всё равно должно запускаться
+
+        brand_box = tk.Frame(brand_wrap, bg=BG)
         brand_box.pack(side="left")
         brand_row = tk.Frame(brand_box, bg=BG)
         brand_row.pack(anchor="w")
@@ -1467,6 +1570,13 @@ class App:
         self.ca_entry = ttk.Entry(ca_col, font=("Consolas", 11))
         self.ca_entry.pack(fill="x", pady=(2, 0))
         self.ca_entry.bind("<Return>", lambda e: self.start())
+
+        rpc_col = ttk.Frame(input_row)
+        rpc_col.pack(side="left", padx=(12, 0))
+        self.rpc_label_lbl = ttk.Label(rpc_col, style="Muted.TLabel")
+        self.rpc_label_lbl.pack(anchor="w")
+        self.rpc_var = tk.StringVar(value="")
+        ttk.Entry(rpc_col, textvariable=self.rpc_var, width=30, font=("Consolas", 10)).pack(pady=(2, 0))
 
         interval_col = ttk.Frame(input_row)
         interval_col.pack(side="left", padx=(12, 0))
@@ -1693,6 +1803,9 @@ class App:
 
         self.stats_card_title = tk.Label(pad, bg=PANEL, fg=MUTED, font=("Segoe UI", 8, "bold"))
         self.stats_card_title.pack(anchor="w")
+        self.stats_hint_lbl = tk.Label(pad, bg=PANEL, fg=MUTED, font=("Segoe UI", 7), anchor="w",
+                                        wraplength=190, justify="left")
+        self.stats_hint_lbl.pack(anchor="w", pady=(2, 0))
 
         big_row = tk.Frame(pad, bg=PANEL)
         big_row.pack(fill="x", pady=(14, 10))
@@ -1729,6 +1842,9 @@ class App:
         self.stat_net_cap.pack(anchor="w")
         self.stat_net_val = tk.Label(pad, text="—", bg=PANEL, fg=TEXT, font=("Consolas", 15, "bold"), anchor="w")
         self.stat_net_val.pack(anchor="w")
+        self.stat_net_hint = tk.Label(pad, bg=PANEL, fg=MUTED, font=("Segoe UI", 7), anchor="w",
+                                       wraplength=190, justify="left")
+        self.stat_net_hint.pack(anchor="w", pady=(2, 0))
 
     # -- i18n ------------------------------------------------------------
     def on_lang_change(self, _evt=None):
@@ -1769,6 +1885,9 @@ class App:
         self.last_price_cap.configure(text=t("last_price_label"))
         self.stats_buys_cap.configure(text=t("header_stat_buys"))
         self.stats_sells_cap.configure(text=t("header_stat_sells"))
+        self.stats_hint_lbl.configure(text=t("stats_hint"))
+        self.stat_net_hint.configure(text=t("stat_net_hint"))
+        self.rpc_label_lbl.configure(text=t("rpc_label"))
         self.stat_buy_vol_cap.configure(text=t("stat_buy_volume"))
         self.stat_sell_vol_cap.configure(text=t("stat_sell_volume"))
         self.stat_net_cap.configure(text=t("stat_net_flow"))
@@ -2098,8 +2217,12 @@ class App:
         if not ca:
             self.status_var.set(self.tr.t("status_enter_ca"))
             return
+        rpc_override = self.rpc_var.get().strip() or None
+        # на публичном RPC меньше 0.5с смысла нет — упрёмся в лимиты и станет только
+        # медленнее; со своим эндпоинтом можно опускаться до 0.1с
+        floor = 0.1 if rpc_override else 0.5
         try:
-            interval = max(0.5, float(self.interval_var.get()))
+            interval = max(floor, float(self.interval_var.get()))
         except ValueError:
             interval = 1.0
 
@@ -2123,7 +2246,7 @@ class App:
 
         def worker():
             try:
-                run_watch(ca, interval, self.emit, stop_event, tr)
+                run_watch(ca, interval, self.emit, stop_event, tr, rpc_override=rpc_override)
             except Exception as e:
                 self.emit("error", tr.t("log_unexpected_error", e=e))
             finally:
@@ -2132,7 +2255,8 @@ class App:
         self.worker = threading.Thread(target=worker, daemon=True)
         self.worker.start()
 
-        self.start_bundle_check(ca)  # бандл-проверка — главная функция, запускается сразу вместе со стартом
+        # бандл-проверка — главная функция, запускается сразу вместе со стартом
+        self.start_bundle_check(ca, rpc_override)
 
     def stop(self):
         if self.stop_event:
@@ -2147,7 +2271,7 @@ class App:
         self.ca_entry.configure(state="normal")
         self.stop_btn.configure(state="disabled")
 
-    def start_bundle_check(self, ca):
+    def start_bundle_check(self, ca, rpc_override=None):
         if self._bundle_stop_event:
             self._bundle_stop_event.set()  # прерываем предыдущую проверку, если ещё бежит
 
@@ -2163,7 +2287,7 @@ class App:
 
         def worker():
             try:
-                run_bundle_check(ca, self.emit, tr, bundle_stop_event)
+                run_bundle_check(ca, self.emit, tr, bundle_stop_event, rpc_override=rpc_override)
             except Exception as e:
                 self.emit("bundle_result", {"error": tr.t("log_unexpected_error", e=e)})
 
