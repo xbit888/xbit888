@@ -15,6 +15,7 @@ CA Watcher — live-трекер покупок/продаж токена по C
 
 import concurrent.futures
 import json
+import os
 import queue
 import re
 import threading
@@ -158,6 +159,18 @@ TR = {
     "bundle_early_fmt": {"ru": "Ранние покупки: {pct:.1f}% предложения · {wallets} кошельков",
                           "en": "Early buys: {pct:.1f}% of supply · {wallets} wallets",
                           "zh": "早期买入：占供应量 {pct:.1f}% · {wallets} 个钱包"},
+    "bundle_table_idle": {"ru": "Здесь появятся группы связанных кошельков, если бандл найдётся",
+                           "en": "Groups of linked wallets will appear here if a bundle is found",
+                           "zh": "如果发现捆绑，关联钱包分组将显示在这里"},
+    "bundle_table_checking": {"ru": "Идёт проверка ранних покупателей...",
+                               "en": "Checking early buyers...",
+                               "zh": "正在检查早期买家..."},
+    "bundle_table_clean": {"ru": "Связанных кошельков не найдено — покупатели не связаны между собой",
+                            "en": "No linked wallets found — buyers appear unrelated",
+                            "zh": "未发现关联钱包——买家之间似乎互不相关"},
+    "bundle_table_no_funder_check": {"ru": "Для этой сети связи кошельков не проверяются",
+                                      "en": "Wallet links aren't checked on this network",
+                                      "zh": "该网络不检查钱包关联"},
     "row_bundle": {"ru": "БАНДЛ", "en": "BUNDLE", "zh": "捆绑检测"},
     "bundle_checking_short": {"ru": "проверка...", "en": "checking...", "zh": "检测中..."},
     "bundle_row_na": {"ru": "нет данных", "en": "n/a", "zh": "无数据"},
@@ -271,6 +284,17 @@ DEFAULT_SOLANA_RPC = "https://api.mainnet-beta.solana.com"
 
 # окно "запуска" токена, в котором ищем скоординированные закупы (бандлы)
 BUNDLE_WINDOW_SECONDS = 60
+
+# Частота опроса блокчейна. Поля в интерфейсе намеренно нет: значение и так
+# максимально быстрое, а при лимитах RPC цикл сам притормаживает (см. Pacer).
+POLL_INTERVAL = 0.1
+
+# Свой RPC-эндпоинт (снимает лимиты публичного). Из интерфейса убран, чтобы не
+# мешал; при необходимости задаётся переменной окружения XBIT_RPC.
+RPC_OVERRIDE = os.environ.get("XBIT_RPC") or None
+
+# Ширина свечи на графике — секунда, как на биржевых терминалах.
+CANDLE_SECONDS = 1
 
 CHAIN_DISPLAY_NAMES = {
     "ethereum": "Ethereum", "bsc": "BSC", "base": "Base", "arbitrum": "Arbitrum",
@@ -1402,7 +1426,9 @@ class Pacer:
         self._ok_streak = 0
         if not self._throttled:
             self._throttled = True
-            self.emit("error", self.tr.t("log_rpc_throttled", interval=round(self.delay, 1)))
+            # это не поломка, а нормальная реакция на лимит — пишем как info,
+            # чтобы не выглядело ошибкой в логе
+            self.emit("info", self.tr.t("log_rpc_throttled", interval=round(self.delay, 1)))
 
     def on_success(self):
         if self.delay <= self.base:
@@ -1763,7 +1789,8 @@ class App:
         self.sell_volume = 0.0
         self.quote_symbol = ""
         self.candles = []
-        self.candle_seconds = 5
+        self.candle_seconds = CANDLE_SECONDS
+        self.max_candles = 90
         self.mcap_anchor = None
         self.mcap_unit = ""
         self.mcap_unit_is_prefix = True
@@ -1774,8 +1801,10 @@ class App:
         self.root.after(120, self.drain_queue)
         self.root.after(500, self._blink_live_dot)
         self.root.after(1000, self._tick_clock)
+        self.root.after(1000, self._tick_candles)
         self.root.protocol("WM_DELETE_WINDOW", self.on_close)
         self.retranslate()
+        self.clear_bundle_table("bundle_table_idle")  # пустая таблица сразу объясняет себя
 
     # -- style ---------------------------------------------------------
     def _build_style(self):
@@ -1913,21 +1942,6 @@ class App:
         self.ca_entry.pack(fill="x", pady=(2, 0))
         self.ca_entry.bind("<Return>", lambda e: self.start())
 
-        rpc_col = ttk.Frame(input_row)
-        rpc_col.pack(side="left", padx=(12, 0))
-        self.rpc_label_lbl = ttk.Label(rpc_col, style="Muted.TLabel")
-        self.rpc_label_lbl.pack(anchor="w")
-        self.rpc_var = tk.StringVar(value="")
-        ttk.Entry(rpc_col, textvariable=self.rpc_var, width=30, font=("Consolas", 10)).pack(pady=(2, 0))
-
-        interval_col = ttk.Frame(input_row)
-        interval_col.pack(side="left", padx=(12, 0))
-        self.interval_label_lbl = ttk.Label(interval_col, style="Muted.TLabel")
-        self.interval_label_lbl.pack(anchor="w")
-        self.interval_var = tk.StringVar(value="0.1")
-        ttk.Entry(interval_col, textvariable=self.interval_var, width=6, font=("Consolas", 11),
-                  justify="center").pack(pady=(2, 0))
-
         btn_col = ttk.Frame(input_row)
         btn_col.pack(side="left", padx=(12, 0), anchor="s")
         self.start_btn = ttk.Button(btn_col, style="Accent.TButton", command=self.start)
@@ -1945,7 +1959,6 @@ class App:
 
         self._build_token_card(body)
         self._build_bundle_card(body)   # центр — главное: анализ бандлов
-        self._build_stats_card(body)
 
         # ---- второстепенная полоса: график + лента сделок ----
         self._build_bottom_strip()
@@ -2069,12 +2082,14 @@ class App:
         self.bundle_tree.column("wallets", width=90, anchor="center", stretch=False)
         self.bundle_tree.column("pct", width=120, anchor="e", stretch=False)
         self.bundle_tree.tag_configure("bundle", foreground=RED, background="#2a1116")
+        self.bundle_tree.tag_configure("placeholder", foreground=MUTED)
         self.bundle_tree.bind("<Double-Button-1>", self.on_bundle_row_double_click)
         vsb = ttk.Scrollbar(table_frame, orient="vertical", command=self.bundle_tree.yview)
         self.bundle_tree.configure(yscrollcommand=vsb.set)
         self.bundle_tree.pack(side="left", fill="both", expand=True)
         vsb.pack(side="right", fill="y")
         self._bundle_row_data = {}
+        self._bundle_placeholder_key = None
 
     def _build_bottom_strip(self):
         """Второстепенная полоса: компактный график цены + компактная лента сделок."""
@@ -2142,57 +2157,7 @@ class App:
         self.tree.pack(side="left", fill="both", expand=True)
         vsb.pack(side="right", fill="y")
 
-    def _build_stats_card(self, parent):
-        card = self._card(parent, 2, minwidth=220)
-        pad = tk.Frame(card, bg=PANEL, padx=14, pady=12)
-        pad.pack(fill="both", expand=True)
 
-        self.stats_card_title = tk.Label(pad, bg=PANEL, fg=MUTED, font=("Segoe UI", 8, "bold"))
-        self.stats_card_title.pack(anchor="w")
-        self.stats_hint_lbl = tk.Label(pad, bg=PANEL, fg=MUTED, font=("Segoe UI", 7), anchor="w",
-                                        wraplength=190, justify="left")
-        self.stats_hint_lbl.pack(anchor="w", pady=(2, 0))
-
-        big_row = tk.Frame(pad, bg=PANEL)
-        big_row.pack(fill="x", pady=(14, 10))
-
-        buy_box = tk.Frame(big_row, bg=PANEL)
-        buy_box.pack(side="left", expand=True, fill="x")
-        self.stats_buys_val = tk.Label(buy_box, text="0", bg=PANEL, fg=GREEN, font=("Consolas", 26, "bold"))
-        self.stats_buys_val.pack(anchor="w")
-        self.stats_buys_cap = tk.Label(buy_box, bg=PANEL, fg=MUTED, font=("Segoe UI", 8, "bold"), anchor="w")
-        self.stats_buys_cap.pack(anchor="w")
-
-        sell_box = tk.Frame(big_row, bg=PANEL)
-        sell_box.pack(side="left", expand=True, fill="x")
-        self.stats_sells_val = tk.Label(sell_box, text="0", bg=PANEL, fg=RED, font=("Consolas", 26, "bold"))
-        self.stats_sells_val.pack(anchor="w")
-        self.stats_sells_cap = tk.Label(sell_box, bg=PANEL, fg=MUTED, font=("Segoe UI", 8, "bold"), anchor="w")
-        self.stats_sells_cap.pack(anchor="w")
-
-        tk.Frame(pad, bg=BORDER, height=1).pack(fill="x", pady=(4, 10))
-
-        self.stat_buy_vol_cap = tk.Label(pad, bg=PANEL, fg=MUTED, font=("Segoe UI", 8, "bold"), anchor="w")
-        self.stat_buy_vol_cap.pack(anchor="w")
-        self.stat_buy_vol_val = tk.Label(pad, text="—", bg=PANEL, fg=GREEN, font=("Consolas", 12, "bold"), anchor="w")
-        self.stat_buy_vol_val.pack(anchor="w", pady=(0, 8))
-
-        self.stat_sell_vol_cap = tk.Label(pad, bg=PANEL, fg=MUTED, font=("Segoe UI", 8, "bold"), anchor="w")
-        self.stat_sell_vol_cap.pack(anchor="w")
-        self.stat_sell_vol_val = tk.Label(pad, text="—", bg=PANEL, fg=RED, font=("Consolas", 12, "bold"), anchor="w")
-        self.stat_sell_vol_val.pack(anchor="w", pady=(0, 8))
-
-        tk.Frame(pad, bg=BORDER, height=1).pack(fill="x", pady=(4, 10))
-
-        self.stat_net_cap = tk.Label(pad, bg=PANEL, fg=MUTED, font=("Segoe UI", 8, "bold"), anchor="w")
-        self.stat_net_cap.pack(anchor="w")
-        self.stat_net_val = tk.Label(pad, text="—", bg=PANEL, fg=TEXT, font=("Consolas", 15, "bold"), anchor="w")
-        self.stat_net_val.pack(anchor="w")
-        self.stat_net_hint = tk.Label(pad, bg=PANEL, fg=MUTED, font=("Segoe UI", 7), anchor="w",
-                                       wraplength=190, justify="left")
-        self.stat_net_hint.pack(anchor="w", pady=(2, 0))
-
-    # -- i18n ------------------------------------------------------------
     def set_language(self, code):
         if code not in LANG_NAMES:
             return
@@ -2214,7 +2179,6 @@ class App:
             self.subtitle_lbl.configure(text=t("app_subtitle"))
         self.lang_lbl.configure(text=t("lang_label"))
         self.ca_label_lbl.configure(text=t("ca_label"))
-        self.interval_label_lbl.configure(text=t("interval_label"))
         self.start_btn.configure(text=t("start"))
         self.stop_btn.configure(text=t("stop"))
         self.clear_btn.configure(text=t("clear"))
@@ -2230,22 +2194,15 @@ class App:
 
         self.token_card_title.configure(text=t("card_token_info"))
         self.feed_card_title.configure(text=t("card_live_feed"))
-        self.stats_card_title.configure(text=t("card_live_stats"))
         self.bundle_card_title.configure(text=t("card_bundle_analysis"))
         self.trades_title.configure(text=t("card_trades"))
         self.bundle_window_lbl.configure(text=t("bundle_window_fmt", w=BUNDLE_WINDOW_SECONDS))
         self.bundle_tree.heading("funder", text=t("col_funder"))
         self.bundle_tree.heading("wallets", text=t("col_wallets"))
         self.bundle_tree.heading("pct", text=t("col_supply_pct"))
+        if self._bundle_placeholder_key:  # подсказка тоже должна переводиться
+            self.clear_bundle_table(self._bundle_placeholder_key)
         self.last_price_cap.configure(text=t("last_price_label"))
-        self.stats_buys_cap.configure(text=t("header_stat_buys"))
-        self.stats_sells_cap.configure(text=t("header_stat_sells"))
-        self.stats_hint_lbl.configure(text=t("stats_hint"))
-        self.stat_net_hint.configure(text=t("stat_net_hint"))
-        self.rpc_label_lbl.configure(text=t("rpc_label"))
-        self.stat_buy_vol_cap.configure(text=t("stat_buy_volume"))
-        self.stat_sell_vol_cap.configure(text=t("stat_sell_volume"))
-        self.stat_net_cap.configure(text=t("stat_net_flow"))
 
         self.tree.heading("time", text=t("col_time"))
         self.tree.heading("type", text=t("col_type"))
@@ -2418,16 +2375,6 @@ class App:
 
         self.header_buys_val.configure(text=f"{self.buy_count:,}")
         self.header_sells_val.configure(text=f"{self.sell_count:,}")
-        self.stats_buys_val.configure(text=f"{self.buy_count:,}")
-        self.stats_sells_val.configure(text=f"{self.sell_count:,}")
-
-        if self.buy_volume or self.sell_volume:
-            self.stat_buy_vol_val.configure(text=f"{self.buy_volume:,.4f} {self.quote_symbol}".strip())
-            self.stat_sell_vol_val.configure(text=f"{self.sell_volume:,.4f} {self.quote_symbol}".strip())
-            net = self.buy_volume - self.sell_volume
-            net_color = GREEN if net >= 0 else RED
-            sign = "+" if net >= 0 else ""
-            self.stat_net_val.configure(text=f"{sign}{net:,.4f} {self.quote_symbol}".strip(), fg=net_color)
 
         if quote_raw and amount_raw:
             try:
@@ -2446,9 +2393,12 @@ class App:
                 pass
 
     def _add_candle_point(self, price):
-        """Группирует поступающие цены в свечи по интервалу CANDLE_SECONDS —
-        как на настоящем графике, а не просто линия цена-от-времени."""
+        """Складывает цены в секундные свечи. Секунды без сделок не пропускаются,
+        а заполняются "плоскими" свечами по последней цене — иначе на графике
+        появлялись дыры вместо непрерывной ленты, как на биржевом терминале."""
         bucket = int(time.time() // self.candle_seconds)
+        self._fill_candle_gaps(bucket)
+
         if self.candles and self.candles[-1]["bucket"] == bucket:
             c = self.candles[-1]
             c["high"] = max(c["high"], price)
@@ -2458,8 +2408,36 @@ class App:
             self.candles.append({
                 "bucket": bucket, "open": price, "high": price, "low": price, "close": price,
             })
-            if len(self.candles) > 60:
-                self.candles = self.candles[-60:]
+        self._trim_candles()
+
+    def _fill_candle_gaps(self, up_to_bucket):
+        """Достраивает пустые секунды свечами по последней цене, включая текущую —
+        иначе график всё время отставал бы на секунду. Пришедшая следом сделка
+        просто обновит high/low/close у уже созданной свечи."""
+        if not self.candles:
+            return
+        last = self.candles[-1]
+        gap = up_to_bucket - last["bucket"]
+        if gap <= 0:
+            return
+        price = last["close"]
+        for i in range(1, min(gap, self.max_candles) + 1):
+            self.candles.append({
+                "bucket": last["bucket"] + i,
+                "open": price, "high": price, "low": price, "close": price,
+            })
+
+    def _trim_candles(self):
+        if len(self.candles) > self.max_candles:
+            self.candles = self.candles[-self.max_candles:]
+
+    def _tick_candles(self):
+        """Двигает график во времени, даже когда сделок нет."""
+        if self._live_on and self.candles:
+            self._fill_candle_gaps(int(time.time() // self.candle_seconds))
+            self._trim_candles()
+            self._redraw_candles()
+        self.root.after(1000, self._tick_candles)
 
     def _redraw_candles(self):
         c = self.spark_canvas
@@ -2555,17 +2533,12 @@ class App:
         self.price_native_anchor = None
         self.header_buys_val.configure(text="0")
         self.header_sells_val.configure(text="0")
-        self.stats_buys_val.configure(text="0")
-        self.stats_sells_val.configure(text="0")
-        self.stat_buy_vol_val.configure(text="—")
-        self.stat_sell_vol_val.configure(text="—")
-        self.stat_net_val.configure(text="—", fg=TEXT)
         self.last_price_val.configure(text="—", fg=GREEN)
         self.bundle_row_val.configure(text="—", fg=TEXT)
         self.bundle_big_val.configure(text="—", fg=TEXT)
         self.bundle_verdict_lbl.configure(text="", fg=MUTED)
         self.bundle_early_lbl.configure(text="")
-        self.clear_bundle_table()
+        self.clear_bundle_table("bundle_table_idle")
         self._redraw_candles()
 
     def start(self):
@@ -2573,13 +2546,10 @@ class App:
         if not ca:
             self.status_var.set(self.tr.t("status_enter_ca"))
             return
-        rpc_override = self.rpc_var.get().strip() or None
-        # 0.1с разрешаем всегда; если публичный RPC начнёт отдавать 429, цикл сам
-        # временно замедлится (адаптивный троттлинг) и вернётся к заданной частоте
-        try:
-            interval = max(0.1, float(self.interval_var.get()))
-        except ValueError:
-            interval = 0.1
+        # частота фиксированная и максимально быстрая: цикл сам притормозит,
+        # если RPC начнёт ограничивать, и вернётся обратно
+        interval = POLL_INTERVAL
+        rpc_override = RPC_OVERRIDE
 
         self.clear()
         for field, (key, cap, val) in self.token_rows.items():
@@ -2638,7 +2608,7 @@ class App:
         self.bundle_big_val.configure(text="…", fg=MUTED)
         self.bundle_verdict_lbl.configure(text=tr.t("bundle_verdict_checking"), fg=MUTED)
         self.bundle_early_lbl.configure(text="")
-        self.clear_bundle_table()
+        self.clear_bundle_table("bundle_table_checking")
 
         def worker():
             try:
@@ -2648,10 +2618,16 @@ class App:
 
         threading.Thread(target=worker, daemon=True).start()
 
-    def clear_bundle_table(self):
+    def clear_bundle_table(self, placeholder_key=None):
         for row_id in self.bundle_tree.get_children():
             self.bundle_tree.delete(row_id)
         self._bundle_row_data.clear()
+        # пустая таблица без пояснения выглядит как будто что-то сломалось,
+        # поэтому всегда показываем строку-подсказку о текущем состоянии
+        self._bundle_placeholder_key = placeholder_key
+        if placeholder_key:
+            self.bundle_tree.insert("", "end", values=(self.tr.t(placeholder_key), "", ""),
+                                     tags=("placeholder",))
 
     def show_bundle_result(self, data):
         t = self.tr.t
@@ -2663,6 +2639,7 @@ class App:
             self.bundle_big_val.configure(text="—", fg=MUTED)
             self.bundle_verdict_lbl.configure(text=t("bundle_verdict_na"), fg=MUTED)
             self.bundle_early_lbl.configure(text=str(data["error"]))
+            self.clear_bundle_table("bundle_table_idle")
             return
 
         self.append_log(f"— {t('bundle_result_title')} —", "info")
@@ -2680,6 +2657,7 @@ class App:
                 text=t("bundle_row_early_only", pct=data["early_pct"]), fg=TEXT)
             self.bundle_big_val.configure(text=f"{data['early_pct']:.1f}%", fg=GOLD)
             self.bundle_verdict_lbl.configure(text=t("bundle_verdict_early_only"), fg=GOLD)
+            self.clear_bundle_table("bundle_table_no_funder_check")
             return
 
         clusters = data.get("bundle_clusters") or {}
@@ -2707,6 +2685,7 @@ class App:
             self.bundle_big_val.configure(text="0.0%", fg=GREEN)
             self.bundle_verdict_lbl.configure(text=t("bundle_verdict_clean"), fg=GREEN)
             self.bundle_row_val.configure(text=t("bundle_row_clean"), fg=GREEN)
+            self.clear_bundle_table("bundle_table_clean")
 
         if data.get("truncated"):
             self.append_log(t("bundle_result_cap_note", n=25), "info")
