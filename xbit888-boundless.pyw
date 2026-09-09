@@ -246,6 +246,9 @@ TR = {
     "bundle_row_clean": {"ru": "✓ признаков не найдено", "en": "✓ no signs found", "zh": "✓ 未发现迹象"},
     "check_bundles": {"ru": "🔍 Бандлы", "en": "🔍 Bundles", "zh": "🔍 捆绑检测"},
     "bundle_checking": {"ru": "Проверяю бандлы...", "en": "Checking bundles...", "zh": "正在检测捆绑买入..."},
+    "bundle_linking": {"ru": "Список готов. Проверяю, связаны ли кошельки между собой...",
+                        "en": "List ready. Checking whether the wallets are linked...",
+                        "zh": "列表已就绪，正在检查钱包之间是否关联..."},
     "bundle_scanning_launch": {"ru": "Ищу самые первые сделки после запуска токена...",
                                 "en": "Scanning the earliest trades after launch...",
                                 "zh": "正在扫描代币刚上线时的最早交易..."},
@@ -938,44 +941,20 @@ def assess_token_risk(data, held_by_wallet=None):
     return {"score": score, "level": level, "reasons": reasons}
 
 
-def _finish_bundle_check(per_wallet, total_supply, launch_time, hit_cap, window_seconds,
-                          funder_fn, emit, tr, stop_event, max_wallets, funder_unsupported=False,
-                          track=None):
-    if not per_wallet:
-        emit("bundle_result", {"error": tr.t("bundle_no_early_buys")})
-        return
-
-    wallets_by_size = sorted(per_wallet.items(), key=lambda kv: kv[1], reverse=True)[:max_wallets]
-    truncated = len(per_wallet) > max_wallets
-
-    funders = {}
-    if not funder_unsupported:
-        # параллельно, но небольшим пулом: последовательный обход с паузами
-        # растягивал проверку на десятки секунд
-        wallets = [w for w, _a in wallets_by_size]
-        with concurrent.futures.ThreadPoolExecutor(max_workers=5) as pool:
-            future_map = {pool.submit(funder_fn, w): w for w in wallets}
-            for fut in concurrent.futures.as_completed(future_map):
-                if stop_event.is_set():
-                    return
-                wallet = future_map[fut]
-                try:
-                    funders[wallet] = fut.result()
-                except Exception:
-                    funders[wallet] = None
-
+def _build_bundle_payload(per_wallet, total_supply, window_seconds, hit_cap, truncated,
+                           funders, funder_unsupported, track):
+    """Собирает то, что уходит в интерфейс. Вызывается дважды: сразу после разбора
+    окна запуска (ещё без раздатчиков) и повторно, когда те дочитались."""
     clusters = {}
-    for wallet, funder in funders.items():
+    for wallet, funder in (funders or {}).items():
         if funder:
             clusters.setdefault(funder, []).append(wallet)
-    raw_clusters = {f: ws for f, ws in clusters.items() if len(ws) >= 2}
-
-    early_total = sum(per_wallet.values())
-    early_pct = (early_total / total_supply * 100) if total_supply else 0.0
 
     bundle_clusters = {}
     bundle_total = 0.0
-    for funder, wallets in raw_clusters.items():
+    for funder, wallets in clusters.items():
+        if len(wallets) < 2:
+            continue
         cluster_amount = sum(per_wallet[w] for w in wallets)
         bundle_total += cluster_amount
         bundle_clusters[funder] = {
@@ -983,11 +962,7 @@ def _finish_bundle_check(per_wallet, total_supply, launch_time, hit_cap, window_
             "amount": cluster_amount,
             "pct": (cluster_amount / total_supply * 100) if total_supply else 0.0,
         }
-    bundle_pct = (bundle_total / total_supply * 100) if total_supply else 0.0
 
-    # Главное, что человек хочет увидеть, — это сами кошельки, а не одна цифра.
-    # Поэтому отдаём полный список ранних покупателей: у сгруппированных проставлен
-    # номер группы, у остальных его нет, и сразу видно, кто с кем связан.
     group_of_funder = {}
     for idx, (funder, _c) in enumerate(
             sorted(bundle_clusters.items(), key=lambda kv: kv[1]["amount"], reverse=True), start=1):
@@ -995,19 +970,20 @@ def _finish_bundle_check(per_wallet, total_supply, launch_time, hit_cap, window_
 
     wallet_rows = []
     for wallet, amount in sorted(per_wallet.items(), key=lambda kv: kv[1], reverse=True)[:200]:
-        funder = funders.get(wallet)
+        funder = (funders or {}).get(wallet)
         wallet_rows.append({
             "wallet": wallet,
             "amount": amount,
             "pct": (amount / total_supply * 100) if total_supply else 0.0,
             "funder": funder,
             "group": group_of_funder.get(funder),
-            "checked": wallet in funders,
+            "checked": wallet in (funders or {}),
         })
 
-    emit("bundle_result", {
-        "early_pct": early_pct,
-        "bundle_pct": bundle_pct,
+    early_total = sum(per_wallet.values())
+    return {
+        "early_pct": (early_total / total_supply * 100) if total_supply else 0.0,
+        "bundle_pct": (bundle_total / total_supply * 100) if total_supply else 0.0,
         "early_wallets": len(per_wallet),
         "bundle_clusters": bundle_clusters,
         "wallet_rows": wallet_rows,
@@ -1016,7 +992,46 @@ def _finish_bundle_check(per_wallet, total_supply, launch_time, hit_cap, window_
         "hit_cap": hit_cap,
         "truncated": truncated,
         "funder_unsupported": funder_unsupported,
-    })
+    }
+
+
+def _finish_bundle_check(per_wallet, total_supply, launch_time, hit_cap, window_seconds,
+                          funder_fn, emit, tr, stop_event, max_wallets, funder_unsupported=False,
+                          track=None):
+    if not per_wallet:
+        emit("bundle_result", {"error": tr.t("bundle_no_early_buys")})
+        return
+
+    truncated = len(per_wallet) > max_wallets
+
+    # Разбор окна занимает секунды, а поиск раздатчиков — почти минуту: обозреватель
+    # отвечает на каждый кошелёк отдельно. Поэтому список покупателей показываем
+    # сразу, а связи между ними дорисовываем, когда дочитаются.
+    first = _build_bundle_payload(per_wallet, total_supply, window_seconds,
+                                   hit_cap, truncated, None, funder_unsupported, track)
+    first["funders_pending"] = not funder_unsupported
+    emit("bundle_result", first)
+    if funder_unsupported:
+        return
+
+    emit("info", tr.t("bundle_linking"))
+    wallets = [w for w, _a in sorted(per_wallet.items(), key=lambda kv: kv[1], reverse=True)[:max_wallets]]
+    funders = {}
+    with concurrent.futures.ThreadPoolExecutor(max_workers=12) as pool:
+        future_map = {pool.submit(funder_fn, w): w for w in wallets}
+        for fut in concurrent.futures.as_completed(future_map):
+            if stop_event.is_set():
+                return
+            wallet = future_map[fut]
+            try:
+                funders[wallet] = fut.result()
+            except Exception:
+                funders[wallet] = None
+
+    if stop_event.is_set():
+        return
+    emit("bundle_funders", _build_bundle_payload(per_wallet, total_supply, window_seconds,
+                                                  hit_cap, truncated, funders, False, track))
 
 
 BLOCKSCOUT_API_BASE = {
@@ -1136,6 +1151,56 @@ def evm_get_total_supply(rpc_url, token_address):
     return int(result, 16) if result and result != "0x" else 0
 
 
+# Uniswap V4 пишет Initialize ровно один раз на пул: topics = (id, currency0, currency1).
+# Это единственный надёжный источник и момента запуска, и порядка токенов в паре.
+UNISWAP_V4_INITIALIZE_TOPIC = "0xdd466e674ea557f56295e2d0218a125ea4b4f0f6f3307b95f85e6110838d6438"
+
+
+def evm_find_pool_initialize(rpc_url, pool_manager, pool_id):
+    """Возвращает блок создания пула и оба токена пары.
+
+    Ищем окнами от свежих блоков к старым: у токена, который только запустился,
+    Initialize лежит рядом с концом цепочки и находится с первой попытки, а
+    сканирование всей истории занимает несколько секунд на каждый запуск."""
+    try:
+        latest = int(evm_rpc_call(rpc_url, "eth_blockNumber", []), 16)
+    except Exception:
+        latest = None
+
+    ranges = []
+    if latest:
+        prev = latest
+        for span in (100_000, 500_000, 2_000_000):
+            floor = max(0, latest - span)
+            ranges.append((floor, prev))
+            prev = max(0, floor - 1)
+            if floor == 0:
+                break
+    ranges.append((0, latest if latest else "latest"))
+
+    logs = []
+    for from_block, to_block in ranges:
+        try:
+            logs = evm_get_logs_retry(rpc_url, {
+                "address": pool_manager,
+                "topics": [UNISWAP_V4_INITIALIZE_TOPIC, pool_id],
+                "fromBlock": hex(from_block),
+                "toBlock": hex(to_block) if isinstance(to_block, int) else to_block,
+            })
+        except Exception:
+            logs = []
+        if logs:
+            break
+    if not logs:
+        return None
+    log = min(logs, key=lambda l: int(l["blockNumber"], 16))
+    return {
+        "block": int(log["blockNumber"], 16),
+        "currency0": evm_topic_to_address(log["topics"][2]),
+        "currency1": evm_topic_to_address(log["topics"][3]),
+    }
+
+
 def fetch_all_pool_swaps(rpc_url, pool_manager, pool_id, lookback_blocks=1_500_000, stop_event=None):
     """Забирает ВСЕ свопы конкретного пула. Фильтр по poolId делает выборку маленькой,
     поэтому обычно хватает одного запроса на широкий диапазон; если RPC упрётся в лимит
@@ -1202,8 +1267,12 @@ def check_evm_bundles(ca, chain_id, info, rpc_url, window_seconds, emit, tr, sto
         pool_id = discovered["pool_id"]
         quote_address = quote_address or discovered.get("quote_token")
 
-    if not quote_address:
-        emit("bundle_result", {"error": tr.t("bundle_no_pair")})
+    # Момент запуска берём из Initialize, а не из "самого раннего найденного свопа":
+    # широкий запрос логов RPC молча обрезает, и тогда за запуск принимался блок
+    # на сотни тысяч блоков позже настоящего — вместе с ним уезжало и всё окно.
+    init = evm_find_pool_initialize(rpc_url, pool_manager, pool_id)
+    if not init:
+        emit("bundle_result", {"error": tr.t("bundle_no_history")})
         return
 
     try:
@@ -1219,16 +1288,11 @@ def check_evm_bundles(ca, chain_id, info, rpc_url, window_seconds, emit, tr, sto
         emit("bundle_result", {"error": tr.t("bundle_no_supply")})
         return
 
-    swaps, _latest, rpc_blocked = fetch_all_pool_swaps(rpc_url, pool_manager, pool_id,
-                                                       stop_event=stop_event)
-    if not swaps:
-        key = "bundle_rpc_blocked" if rpc_blocked else "bundle_no_history"
-        emit("bundle_result", {"error": tr.t(key)})
-        return
+    first_block = init["block"]
+    # порядок токенов тоже берём из Initialize: угадывание по адресам иногда
+    # переворачивалось, и тогда все покупки читались как продажи
+    is_token0 = init["currency0"].lower() == ca.lower()
 
-    # первый своп пула = момент запуска. Время блока меряем прямо по двум блокам:
-    # на быстрых сетях (у Robinhood ~0.1с) ошибка здесь сразу сужает окно в разы.
-    first_block = int(swaps[0]["blockNumber"], 16)
     launch_ts = evm_block_timestamp(rpc_url, first_block) or 0
     later_ts = evm_block_timestamp(rpc_url, first_block + 5000)
     if launch_ts and later_ts and later_ts > launch_ts:
@@ -1238,22 +1302,33 @@ def check_evm_bundles(ca, chain_id, info, rpc_url, window_seconds, emit, tr, sto
     window_blocks = max(1, int(window_seconds / max(block_time, 0.001)))
     last_block_in_window = first_block + window_blocks
 
-    is_token0 = int(ca, 16) < int(quote_address, 16)
+    # запрашиваем ровно окно запуска: маленький диапазон читается целиком и быстро,
+    # в отличие от прежнего прохода по всей истории пула
+    try:
+        swaps = evm_get_logs_retry(rpc_url, {
+            "address": pool_manager,
+            "topics": [UNISWAP_V4_SWAP_TOPIC, pool_id],
+            "fromBlock": hex(first_block), "toBlock": hex(last_block_in_window),
+        })
+    except Exception:
+        emit("bundle_result", {"error": tr.t("bundle_rpc_blocked")})
+        return
+    if not swaps:
+        emit("bundle_result", {"error": tr.t("bundle_no_history")})
+        return
+
     buys_by_tx = {}
-    for lg in swaps:
-        if int(lg["blockNumber"], 16) > last_block_in_window:
-            break
+    for lg in sorted(swaps, key=lambda l: int(l["blockNumber"], 16)):
         amount0 = evm_word_signed(lg["data"], 0)
         amount1 = evm_word_signed(lg["data"], 1)
         our_amount = amount0 if is_token0 else amount1
         if our_amount > 0:  # положительное = трейдер получает наш токен = покупка
-            buys_by_tx[lg["transactionHash"]] = buys_by_tx.get(lg["transactionHash"], 0.0) + \
-                our_amount / (10 ** decimals)
+            buys_by_tx[lg["transactionHash"]] = buys_by_tx.get(lg["transactionHash"], 0.0) +                 our_amount / (10 ** decimals)
 
     per_wallet = {}
     if buys_by_tx:
         tx_hashes = list(buys_by_tx.keys())
-        with concurrent.futures.ThreadPoolExecutor(max_workers=6) as pool:
+        with concurrent.futures.ThreadPoolExecutor(max_workers=12) as pool:
             future_map = {
                 pool.submit(evm_rpc_call, rpc_url, "eth_getTransactionByHash", [h]): h
                 for h in tx_hashes
@@ -2685,6 +2760,8 @@ class App:
                     self.update_trade_wallet(payload)
                 elif kind == "bundle_result":
                     self.show_bundle_result(payload)
+                elif kind == "bundle_funders":
+                    self.show_bundle_result(payload, keep_holdings=True)
                 elif kind == "bundle_holdings":
                     self.update_bundle_holdings(payload)
                 elif kind in ("info", "error"):
@@ -3225,8 +3302,14 @@ class App:
 
         risk = assess_token_risk(data, self._bundle_held)
         color = {"high": RED, "caution": GOLD, "low": GREEN}[risk["level"]]
-        self.risk_score_lbl.configure(text=f"{risk['score']}%", fg=color)
-        self.risk_level_lbl.configure(text=t("risk_level_" + risk["level"]), fg=color)
+        if data.get("funders_pending"):
+            # часть сигналов ещё не посчитана — вердикт был бы преждевременным
+            color = MUTED
+            self.risk_score_lbl.configure(text=f"{risk['score']}%", fg=MUTED)
+            self.risk_level_lbl.configure(text=t("bundle_verdict_checking"), fg=MUTED)
+        else:
+            self.risk_score_lbl.configure(text=f"{risk['score']}%", fg=color)
+            self.risk_level_lbl.configure(text=t("risk_level_" + risk["level"]), fg=color)
         self._risk_score, self._risk_color = risk["score"], color
         self._redraw_risk_bar()
         if risk["reasons"]:
@@ -3247,12 +3330,16 @@ class App:
         self.risk_bar.coords(self._risk_bar_rect, 0, 0, width * self._risk_score / 100, 6)
         self.risk_bar.itemconfigure(self._risk_bar_rect, fill=getattr(self, "_risk_color", MUTED))
 
-    def show_bundle_result(self, data):
+    def show_bundle_result(self, data, keep_holdings=False):
+        """keep_holdings=True — это второй, догоняющий результат с раздатчиками:
+        панель обновляется на месте, уже собранные балансы и запущенный трекер
+        трогать нельзя, иначе всё начнётся заново."""
         t = self.tr.t
-        self._stop_holdings_tracker()
-        self._bundle_held.clear()
-        self._bundle_held_logged = None
-        self.bundle_held_val.configure(text="—", fg=MUTED)
+        if not keep_holdings:
+            self._stop_holdings_tracker()
+            self._bundle_held.clear()
+            self._bundle_held_logged = None
+            self.bundle_held_val.configure(text="—", fg=MUTED)
         self._bundle_last_result = None
         self._render_risk()
         self.clear_bundle_table()
@@ -3267,29 +3354,37 @@ class App:
             self.clear_bundle_table("bundle_table_idle")
             return
 
-        self.append_log(f"— {t('bundle_result_title')} —", "info")
-        self.append_log(
-            t("bundle_result_early", window=data["window_seconds"],
-              pct=data["early_pct"], wallets=data["early_wallets"]),
-            "info",
-        )
-
+        pending = bool(data.get("funders_pending"))
         clusters = data.get("bundle_clusters") or {}
+
+        if not keep_holdings:
+            self.append_log(f"— {t('bundle_result_title')} —", "info")
+            self.append_log(
+                t("bundle_result_early", window=data["window_seconds"],
+                  pct=data["early_pct"], wallets=data["early_wallets"]),
+                "info",
+            )
+
         self._set_bundle_stat("bundle_stat_early", f"{data['early_pct']:.1f}%")
         self._set_bundle_stat("bundle_stat_wallets", str(data["early_wallets"]))
-        self._set_bundle_stat("bundle_stat_groups", str(len(clusters)),
+        self._set_bundle_stat("bundle_stat_groups", "…" if pending else str(len(clusters)),
                               RED if clusters else ACCENT)
 
         self._bundle_last_result = data
         self._render_bundle_rows(data)
         self._render_risk()
-        if data.get("track") and data.get("wallet_rows"):
+        if data.get("track") and data.get("wallet_rows") and not keep_holdings:
             self._start_holdings_tracker(data["track"], data["wallet_rows"])
 
         self._bundle_big_cap_key = "bundle_stat_bundled" if clusters else "bundle_stat_early"
         self.bundle_big_cap.configure(text=t(self._bundle_big_cap_key))
 
-        if data.get("funder_unsupported"):
+        if pending:
+            # связи ещё считаются: пока нельзя ни обвинять, ни оправдывать
+            self.bundle_big_val.configure(text=f"{data['early_pct']:.1f}%", fg=TEXT)
+            self.bundle_verdict_lbl.configure(text=t("bundle_verdict_checking"), fg=MUTED)
+            self.bundle_row_val.configure(text=t("bundle_checking_short"), fg=MUTED)
+        elif data.get("funder_unsupported"):
             self.append_log(t("bundle_funder_unsupported_note"), "info")
             self.bundle_row_val.configure(
                 text=t("bundle_row_early_only", pct=data["early_pct"]), fg=TEXT)
@@ -3313,7 +3408,7 @@ class App:
             self.bundle_verdict_lbl.configure(text=t("bundle_verdict_clean"), fg=GREEN)
             self.bundle_row_val.configure(text=t("bundle_row_clean"), fg=GREEN)
 
-        if data.get("truncated"):
+        if data.get("truncated") and not keep_holdings:
             self.append_log(t("bundle_result_cap_note", n=25), "info")
 
     def on_bundle_row_double_click(self, event):
