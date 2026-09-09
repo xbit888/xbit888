@@ -153,11 +153,14 @@ TR = {
     "col_group": {"ru": "Группа", "en": "Group", "zh": "组"},
     "col_buyer": {"ru": "Кошелёк покупателя", "en": "Buyer wallet", "zh": "买家钱包"},
     "col_bought": {"ru": "Куплено", "en": "Bought", "zh": "买入量"},
-    "row_risk": {"ru": "РИСК", "en": "RISK", "zh": "风险"},
-    "risk_level_high": {"ru": "⚠ ВЫСОКИЙ РИСК", "en": "⚠ HIGH RISK", "zh": "⚠ 高风险"},
+    "row_risk": {"ru": "ОЦЕНКА ЗАПУСКА", "en": "LAUNCH SCORE", "zh": "上线评分"},
+    "risk_level_high": {"ru": "⚠ ГРЯЗНЫЙ ЗАПУСК", "en": "⚠ DIRTY LAUNCH", "zh": "⚠ 上线不干净"},
     "risk_level_caution": {"ru": "⚠ ЕСТЬ К ЧЕМУ ПРИДРАТЬСЯ", "en": "⚠ WORTH A CLOSER LOOK", "zh": "⚠ 需要留意"},
-    "risk_level_low": {"ru": "✓ ЯВНЫХ ПРИЗНАКОВ НЕТ", "en": "✓ NO CLEAR SIGNS", "zh": "✓ 未见明显迹象"},
+    "risk_level_low": {"ru": "✓ ЗАПУСК ЧИСТЫЙ", "en": "✓ CLEAN LAUNCH", "zh": "✓ 上线干净"},
     "risk_level_none": {"ru": "нет данных", "en": "no data", "zh": "无数据"},
+    "risk_score_hint": {"ru": "100% — ни одного признака манипуляции на запуске",
+                         "en": "100% means no manipulation signals at launch",
+                         "zh": "100% 表示上线时没有任何操纵迹象"},
     "risk_bundle_big": {"ru": "{pct:.1f}% предложения скупили связанные кошельки",
                          "en": "{pct:.1f}% of supply bought at launch by linked wallets",
                          "zh": "{pct:.1f}% 的供应量由关联钱包买入"},
@@ -185,9 +188,9 @@ TR = {
     "risk_clean": {"ru": "в окне запуска ничего подозрительного",
                     "en": "nothing suspicious in the launch window",
                     "zh": "上线窗口内未见异常"},
-    "risk_disclaimer": {"ru": "сигналы из цепочки, не финансовый совет",
-                         "en": "on-chain signals, not financial advice",
-                         "zh": "链上信号，非投资建议"},
+    "risk_disclaimer": {"ru": "оценка запуска, а не прогноз цены — не финансовый совет",
+                         "en": "a launch score, not a price forecast — not financial advice",
+                         "zh": "上线评分，非价格预测——非投资建议"},
     "col_now": {"ru": "Сейчас", "en": "Now", "zh": "现在"},
     "bundle_row_sold": {"ru": "вышел", "en": "sold", "zh": "已清仓"},
     "bundle_still_held": {"ru": "ЕЩЁ ДЕРЖАТ", "en": "STILL HELD", "zh": "仍持有"},
@@ -871,59 +874,68 @@ def track_bundle_holdings(track, wallets, emit, stop_event, interval=20.0):
 
 
 def assess_token_risk(data, held_by_wallet=None):
-    """Собирает сигналы риска из уже посчитанных данных о запуске.
+    """Считает оценку чистоты запуска по сигналам, видимым в цепочке.
 
-    Ничего не предсказывает и не советует: только называет то, что видно в
-    цепочке — сколько предложения ушло связанным кошелькам, насколько всё
-    сосредоточено в нескольких руках и сколько из этого висит над рынком
-    прямо сейчас. Каждый сигнал возвращается с текстом, чтобы вердикт не
-    выглядел чёрным ящиком."""
+    Оценка идёт от 100 вниз: каждый найденный признак манипуляции снимает
+    баллы пропорционально своему размеру, и вместе со снятыми баллами
+    возвращается текст — иначе число превратилось бы в чёрный ящик.
+
+    Что оценка НЕ делает: не предсказывает цену и не советует покупать.
+    Чистый запуск не мешает токену уйти в ноль по любой другой причине —
+    например из-за самого контракта, который здесь не разбирается."""
     held_by_wallet = held_by_wallet or {}
     rows = data.get("wallet_rows") or []
     bundle_pct = data.get("bundle_pct") or 0.0
     early_pct = data.get("early_pct") or 0.0
     groups = len(data.get("bundle_clusters") or {})
-    reasons = []
+    reasons = []   # (снятые баллы, ключ текста, параметры)
 
+    # скоординированная закупка — самый прямой признак, за него и снимаем больше
     if bundle_pct >= 15:
-        reasons.append(("high", "risk_bundle_big", {"pct": bundle_pct, "n": groups}))
+        reasons.append((min(35, bundle_pct * 2.5), "risk_bundle_big",
+                        {"pct": bundle_pct, "n": groups}))
     elif bundle_pct >= 5:
-        reasons.append(("caution", "risk_bundle_some", {"pct": bundle_pct, "n": groups}))
+        reasons.append((bundle_pct * 2.0, "risk_bundle_some", {"pct": bundle_pct, "n": groups}))
     elif groups:
-        reasons.append(("caution", "risk_bundle_small", {"pct": bundle_pct, "n": groups}))
+        reasons.append((6.0, "risk_bundle_small", {"pct": bundle_pct, "n": groups}))
 
+    # часть предложения уходит на запуске всегда; штрафуем только перебор
     if early_pct >= 50:
-        reasons.append(("high", "risk_sniped_big", {"pct": early_pct}))
+        reasons.append((min(25, (early_pct - 25) * 0.5), "risk_sniped_big", {"pct": early_pct}))
     elif early_pct >= 25:
-        reasons.append(("caution", "risk_sniped_some", {"pct": early_pct}))
+        reasons.append(((early_pct - 25) * 0.5, "risk_sniped_some", {"pct": early_pct}))
 
     top_pct = rows[0]["pct"] if rows else 0.0
-    if top_pct >= 10:
-        reasons.append(("high", "risk_top_wallet", {"pct": top_pct}))
-    elif top_pct >= 5:
-        reasons.append(("caution", "risk_top_wallet", {"pct": top_pct}))
+    if top_pct >= 5:
+        reasons.append((min(20, (top_pct - 5) * 2.0), "risk_top_wallet", {"pct": top_pct}))
 
     if held_by_wallet:
+        # навес: сколько бандл держит прямо сейчас — это то, что может упасть на рынок
         bundle_held = sum(held_by_wallet.get(r["wallet"], 0.0) for r in rows if r.get("group"))
-        if bundle_held >= 5:
-            reasons.append(("high", "risk_overhang", {"pct": bundle_held}))
-        elif bundle_held >= 2:
-            reasons.append(("caution", "risk_overhang", {"pct": bundle_held}))
+        if bundle_held >= 2:
+            reasons.append((min(25, bundle_held * 2.5), "risk_overhang", {"pct": bundle_held}))
 
         top_now = sorted((held_by_wallet.get(r["wallet"], 0.0) for r in rows), reverse=True)[:10]
         concentration = sum(top_now)
-        if concentration >= 40:
-            reasons.append(("high", "risk_concentration", {"pct": concentration}))
-        elif concentration >= 20:
-            reasons.append(("caution", "risk_concentration", {"pct": concentration}))
+        if concentration >= 20:
+            reasons.append((min(20, (concentration - 20) * 0.5), "risk_concentration",
+                            {"pct": concentration}))
 
-    if any(level == "high" for level, _k, _kw in reasons):
-        level = "high"
-    elif reasons:
+    reasons = [(penalty, key, kwargs) for penalty, key, kwargs in reasons if penalty >= 1]
+    reasons.sort(key=lambda item: item[0], reverse=True)   # сначала то, что весит больше
+    score = max(0, round(100 - sum(penalty for penalty, _k, _kw in reasons)))
+
+    if score >= 80:
+        level = "low"
+    elif score >= 50:
         level = "caution"
     else:
-        level = "low"
-    return {"level": level, "reasons": reasons}
+        level = "high"
+    # запуск, где нашлись связанные кошельки, чистым назвать нельзя, каким бы
+    # ни был балл: иначе ярлык противоречит причинам, перечисленным рядом
+    if groups and level == "low":
+        level = "caution"
+    return {"score": score, "level": level, "reasons": reasons}
 
 
 def _finish_bundle_check(per_wallet, total_supply, launch_time, hit_cap, window_seconds,
@@ -2429,12 +2441,22 @@ class App:
         risk_head.pack(fill="x")
         self.risk_cap = tk.Label(risk_head, bg=PANEL, fg=ACCENT,
                                   font=(MONO, 8, "bold"))
-        self.risk_cap.pack(side="left")
-        self.risk_level_lbl = tk.Label(risk_head, text="—", bg=PANEL, fg=MUTED,
+        self.risk_cap.pack(side="left", pady=(4, 0))
+        self.risk_score_lbl = tk.Label(risk_head, text="—", bg=PANEL, fg=MUTED,
+                                        font=(MONO, 20, "bold"))
+        self.risk_score_lbl.pack(side="left", padx=(14, 0))
+        self.risk_level_lbl = tk.Label(risk_head, text="", bg=PANEL, fg=MUTED,
                                         font=(MONO, 11, "bold"))
-        self.risk_level_lbl.pack(side="left", padx=(12, 0))
+        self.risk_level_lbl.pack(side="left", padx=(12, 0), pady=(4, 0))
         self.risk_note_lbl = tk.Label(risk_head, bg=PANEL, fg=FAINT, font=(MONO, 7))
-        self.risk_note_lbl.pack(side="right")
+        self.risk_note_lbl.pack(side="right", pady=(6, 0))
+
+        # полоса: число само по себе не даёт почувствовать, насколько это много
+        self.risk_bar = tk.Canvas(risk_box, height=6, bg=PANEL2, highlightthickness=0)
+        self.risk_bar.pack(fill="x", pady=(6, 0))
+        self._risk_bar_rect = self.risk_bar.create_rectangle(0, 0, 0, 6, fill=MUTED, outline="")
+        self.risk_bar.bind("<Configure>", lambda e: self._redraw_risk_bar())
+        self._risk_score = None
 
         # причины перечисляем всегда: вердикт без объяснения — чёрный ящик
         self.risk_reasons_lbl = tk.Label(risk_box, text="", bg=PANEL, fg=MUTED,
@@ -3194,18 +3216,36 @@ class App:
         t = self.tr.t
         data = self._bundle_last_result
         if not data:
+            self.risk_score_lbl.configure(text="—", fg=MUTED)
             self.risk_level_lbl.configure(text=t("risk_level_none"), fg=MUTED)
-            self.risk_reasons_lbl.configure(text="")
+            self.risk_reasons_lbl.configure(text=t("risk_score_hint"))
+            self._risk_score = None
+            self._redraw_risk_bar()
             return
 
         risk = assess_token_risk(data, self._bundle_held)
         color = {"high": RED, "caution": GOLD, "low": GREEN}[risk["level"]]
+        self.risk_score_lbl.configure(text=f"{risk['score']}%", fg=color)
         self.risk_level_lbl.configure(text=t("risk_level_" + risk["level"]), fg=color)
+        self._risk_score, self._risk_color = risk["score"], color
+        self._redraw_risk_bar()
         if risk["reasons"]:
-            lines = [f"• {t(key, **kwargs)}" for _level, key, kwargs in risk["reasons"]]
+            # рядом с каждой причиной — сколько именно баллов она сняла
+            lines = [f"•  −{penalty:.0f}   {t(key, **kwargs)}"
+                     for penalty, key, kwargs in risk["reasons"]]
         else:
-            lines = [f"• {t('risk_clean')}"]
+            lines = [f"•  {t('risk_clean')}"]
         self.risk_reasons_lbl.configure(text="\n".join(lines))
+
+    def _redraw_risk_bar(self):
+        width = self.risk_bar.winfo_width()
+        if width <= 1:
+            return
+        if self._risk_score is None:
+            self.risk_bar.coords(self._risk_bar_rect, 0, 0, 0, 6)
+            return
+        self.risk_bar.coords(self._risk_bar_rect, 0, 0, width * self._risk_score / 100, 6)
+        self.risk_bar.itemconfigure(self._risk_bar_rect, fill=getattr(self, "_risk_color", MUTED))
 
     def show_bundle_result(self, data):
         t = self.tr.t
