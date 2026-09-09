@@ -224,9 +224,9 @@ TR = {
     "bundle_early_fmt": {"ru": "Ранние покупки: {pct:.1f}% предложения · {wallets} кошельков",
                           "en": "Early buys: {pct:.1f}% of supply · {wallets} wallets",
                           "zh": "早期买入：占供应量 {pct:.1f}% · {wallets} 个钱包"},
-    "bundle_table_idle": {"ru": "Вставьте адрес токена и нажмите Старт — здесь появятся кошельки, купившие на запуске",
-                           "en": "Paste a token address and press Start — the wallets that bought at launch will appear here",
-                           "zh": "粘贴代币地址并点击开始——上线时买入的钱包会显示在这里"},
+    "bundle_table_idle": {"ru": "Вставьте адрес токена и нажмите Старт",
+                           "en": "Paste a token address and press Start",
+                           "zh": "粘贴代币地址并点击开始"},
     "bundle_table_checking": {"ru": "Идёт проверка ранних покупателей...",
                                "en": "Checking early buyers...",
                                "zh": "正在检查早期买家..."},
@@ -304,6 +304,22 @@ TR = {
     "header_stat_sells": {"ru": "ПРОДАЖИ", "en": "SELLS", "zh": "卖出"},
     "header_stat_clock": {"ru": "ВРЕМЯ", "en": "CLOCK", "zh": "时间"},
 
+    "tab_token": {"ru": "ТОКЕН", "en": "TOKEN", "zh": "代币"},
+    "tab_new_pairs": {"ru": "НОВЫЕ", "en": "NEW PAIRS", "zh": "新交易对"},
+    "tab_migrated": {"ru": "MIGRATED", "en": "MIGRATED", "zh": "已迁移"},
+    "pairs_hint": {"ru": "{n} пулов создано недавно · двойной клик — разобрать токен",
+                    "en": "{n} pools created recently · double-click to analyse",
+                    "zh": "最近创建了 {n} 个资金池 · 双击进行分析"},
+    "col_pair_token": {"ru": "Токен", "en": "Token", "zh": "代币"},
+    "col_pair_age": {"ru": "Возраст", "en": "Age", "zh": "存续"},
+    "pairs_loading": {"ru": "читаю новые пулы...", "en": "loading new pools...", "zh": "正在读取新资金池..."},
+    "pairs_empty": {"ru": "новых пулов пока нет", "en": "no new pools yet", "zh": "暂无新资金池"},
+    "pairs_failed": {"ru": "RPC не ответил, пробую снова", "en": "RPC did not answer, retrying",
+                      "zh": "RPC 无响应，正在重试"},
+    "migrated_todo": {
+        "ru": "На Robinhood Chain отдельного шага миграции нет: пул Uniswap V4 создаётся сразу, и все такие пулы уже показаны во вкладке НОВЫЕ.\n\nНапишите, что здесь показывать — например токены, перешагнувшие определённый MCAP или объём, — и я заполню.",
+        "en": "There is no separate migration step on Robinhood Chain: the Uniswap V4 pool is created straight away, and every such pool already appears under NEW PAIRS.\n\nTell me what this tab should list — tokens past a given MCAP or volume, for example — and I will fill it in.",
+        "zh": "Robinhood Chain 上没有单独的迁移环节：Uniswap V4 资金池会直接创建，这些资金池都已显示在“新交易对”中。\n\n请告诉我这个标签页应该显示什么，例如超过某个市值或成交量的代币。"},
     "card_token_info": {"ru": "ТОКЕН", "en": "TOKEN INFO", "zh": "代币信息"},
     "card_live_feed": {"ru": "ЛЕНТА СДЕЛОК", "en": "LIVE FEED", "zh": "实时交易"},
     "card_live_stats": {"ru": "СТАТИСТИКА", "en": "LIVE STATS", "zh": "实时统计"},
@@ -1199,6 +1215,53 @@ def evm_find_pool_initialize(rpc_url, pool_manager, pool_id):
         "currency0": evm_topic_to_address(log["topics"][2]),
         "currency1": evm_topic_to_address(log["topics"][3]),
     }
+
+
+# singleton PoolManager сети: все пулы Uniswap V4 живут в одном контракте
+KNOWN_POOL_MANAGERS = {
+    "robinhood": "0x8366a39cc670b4001a1121b8f6a443a643e40951",
+}
+
+
+def fetch_new_pairs(rpc_url, pool_manager, lookback_blocks=20000, limit=40, block_time=0.1):
+    """Свежесозданные пулы: одно событие Initialize = один новый пул.
+
+    Котируемые валюты определяем по самому списку — то, что встречается в разных
+    пулах (нативная монета, USDG), это квоты, а новый токен — вторая сторона.
+    Пары из двух квот пропускаем: нового токена в них нет."""
+    latest = int(evm_rpc_call(rpc_url, "eth_blockNumber", []), 16)
+    logs = evm_get_logs_retry(rpc_url, {
+        "address": pool_manager, "topics": [UNISWAP_V4_INITIALIZE_TOPIC],
+        "fromBlock": hex(max(0, latest - lookback_blocks)), "toBlock": hex(latest),
+    })
+    if not logs:
+        return []
+
+    seen = {}
+    for lg in logs:
+        for topic in (lg["topics"][2], lg["topics"][3]):
+            address = evm_topic_to_address(topic).lower()
+            seen[address] = seen.get(address, 0) + 1
+    quotes = {address for address, count in seen.items() if count >= 3}
+    quotes.add("0x0000000000000000000000000000000000000000")
+
+    pairs = []
+    for lg in sorted(logs, key=lambda l: int(l["blockNumber"], 16), reverse=True):
+        c0 = evm_topic_to_address(lg["topics"][2])
+        c1 = evm_topic_to_address(lg["topics"][3])
+        candidates = [c for c in (c0, c1) if c.lower() not in quotes]
+        if len(candidates) != 1:
+            continue  # пара из двух квот либо два неизвестных токена — пропускаем
+        block = int(lg["blockNumber"], 16)
+        pairs.append({
+            "token": candidates[0],
+            "pool_id": lg["topics"][1],
+            "block": block,
+            "age_seconds": max(0, (latest - block) * block_time),
+        })
+        if len(pairs) >= limit:
+            break
+    return pairs
 
 
 def fetch_all_pool_swaps(rpc_url, pool_manager, pool_id, lookback_blocks=1_500_000, stop_event=None):
@@ -2144,8 +2207,10 @@ class App:
         self.root.after(500, self._blink_live_dot)
         self.root.after(1000, self._tick_clock)
         self.root.after(1000, self._tick_candles)
+        self.root.after(15000, self._tick_new_pairs)
         self.root.protocol("WM_DELETE_WINDOW", self.on_close)
         self.retranslate()
+        self.select_left_tab("tab_new_pairs")
         self._show_ca_placeholder()
         self.clear_bundle_table("bundle_table_idle")  # пустая таблица сразу объясняет себя
 
@@ -2395,9 +2460,30 @@ class App:
         return inner
 
     def _build_token_card(self, parent):
-        card = self._card(parent, 0, minwidth=250)
-        pad = tk.Frame(card, bg=PANEL, padx=14, pady=12)
-        pad.pack(fill="both", expand=True)
+        card = self._card(parent, 0, minwidth=268)
+
+        # вкладки вместо второй карточки: список новых пар занимает то же место,
+        # что и данные токена, и не прибавляет окну высоты
+        tabs = tk.Frame(card, bg=PANEL)
+        tabs.pack(fill="x", padx=1, pady=(1, 0))
+        self.left_tabs = {}
+        for key in ("tab_token", "tab_new_pairs", "tab_migrated"):
+            btn = tk.Label(tabs, bg=PANEL, fg=MUTED, font=(MONO, 8, "bold"),
+                            padx=8, pady=6, cursor="hand2")
+            btn.pack(side="left")
+            btn.bind("<Button-1>", lambda e, k=key: self.select_left_tab(k))
+            self.left_tabs[key] = btn
+        tk.Frame(card, bg=BORDER, height=1).pack(fill="x")
+
+        self.left_panes = {}
+        holder = tk.Frame(card, bg=PANEL)
+        holder.pack(fill="both", expand=True)
+        self._left_holder = holder
+
+        pad = tk.Frame(holder, bg=PANEL, padx=14, pady=12)
+        self.left_panes["tab_token"] = pad
+        self._build_new_pairs_pane(holder)
+        self._active_left_tab = None
 
         self.token_card_title = tk.Label(pad, bg=PANEL, fg=ACCENT, font=(MONO, 8, "bold"))
         self.token_card_title.pack(anchor="w")
@@ -2438,6 +2524,54 @@ class App:
         self.bundle_row_val = tk.Label(bundle_row, text="—", bg=PANEL, fg=TEXT,
                                         font=("Consolas", 11, "bold"), anchor="w")
         self.bundle_row_val.pack(anchor="w")
+
+    def _build_new_pairs_pane(self, holder):
+        """Список свежесозданных пулов и вкладка Migrated."""
+        for key in ("tab_new_pairs", "tab_migrated"):
+            pane = tk.Frame(holder, bg=PANEL, padx=10, pady=10)
+            self.left_panes[key] = pane
+
+        pane = self.left_panes["tab_new_pairs"]
+        self.pairs_hint = tk.Label(pane, bg=PANEL, fg=MUTED, font=(MONO, 7),
+                                    anchor="w", justify="left", wraplength=230)
+        self.pairs_hint.pack(fill="x", pady=(0, 6))
+
+        table = tk.Frame(pane, bg=PANEL)
+        table.pack(fill="both", expand=True)
+        self.pairs_tree = ttk.Treeview(table, columns=("token", "age"), show="headings",
+                                        style="Treeview", height=9)
+        self.pairs_tree.column("token", width=140, anchor="w", stretch=True)
+        self.pairs_tree.column("age", width=70, anchor="e", stretch=False)
+        self.pairs_tree.heading("token", text="", anchor="w")
+        self.pairs_tree.heading("age", text="", anchor="e")
+        self.pairs_tree.tag_configure("fresh", foreground=ACCENT)
+        self.pairs_tree.tag_configure("older", foreground=TEXT)
+        self.pairs_tree.tag_configure("placeholder", foreground=MUTED)
+        self.pairs_tree.bind("<Double-Button-1>", self.on_pair_double_click)
+        vsb = ttk.Scrollbar(table, orient="vertical", command=self.pairs_tree.yview)
+        self.pairs_tree.configure(yscrollcommand=vsb.set)
+        self.pairs_tree.pack(side="left", fill="both", expand=True)
+        vsb.pack(side="right", fill="y")
+        self._pairs_rows = {}
+
+        self.migrated_lbl = tk.Label(self.left_panes["tab_migrated"], bg=PANEL, fg=MUTED,
+                                      font=(MONO, 8), anchor="nw", justify="left",
+                                      wraplength=230)
+        self.migrated_lbl.pack(fill="both", expand=True)
+
+    def select_left_tab(self, key):
+        if self._active_left_tab == key:
+            return
+        for pane in self.left_panes.values():
+            pane.pack_forget()
+        self.left_panes[key].pack(fill="both", expand=True)
+        self._active_left_tab = key
+        for tab_key, btn in self.left_tabs.items():
+            active = tab_key == key
+            btn.configure(fg=ON_ACCENT if active else MUTED,
+                           bg=ACCENT if active else PANEL)
+        if key == "tab_new_pairs":
+            self.refresh_new_pairs()
 
     def _build_bundle_card(self, parent):
         """Главная панель приложения — результат анализа бандлов."""
@@ -2688,6 +2822,12 @@ class App:
         self.header_clock_cap.configure(text=t("header_stat_clock"))
 
         self.token_card_title.configure(text=t("card_token_info"))
+        for key, btn in self.left_tabs.items():
+            btn.configure(text=t(key))
+        self.migrated_lbl.configure(text=t("migrated_todo"))
+        self.pairs_hint.configure(text=t("pairs_hint", n=len(self._pairs_rows)))
+        self.pairs_tree.heading("token", text=t("col_pair_token"), anchor="w")
+        self.pairs_tree.heading("age", text=t("col_pair_age"), anchor="e")
         self.feed_card_title.configure(text=t("card_live_feed"))
         self.bundle_card_title.configure(text=t("card_bundle_analysis"))
         self.trades_title.configure(text=t("card_trades"))
@@ -2764,6 +2904,8 @@ class App:
                     self.show_bundle_result(payload, keep_holdings=True)
                 elif kind == "bundle_holdings":
                     self.update_bundle_holdings(payload)
+                elif kind == "new_pairs":
+                    self.show_new_pairs(payload)
                 elif kind in ("info", "error"):
                     self.status_var.set(str(payload))
                     self.append_log(str(payload), kind)
@@ -3078,6 +3220,7 @@ class App:
         self.token_symbol_lbl.configure(text="")
         self.token_icon.configure(text="?")
 
+        self.select_left_tab("tab_token")
         self.stop_event = threading.Event()
         self.start_btn.configure(state="disabled")
         self.ca_entry.configure(state="disabled")
@@ -3319,6 +3462,87 @@ class App:
         else:
             lines = [f"•  {t('risk_clean')}"]
         self.risk_reasons_lbl.configure(text="\n".join(lines))
+
+    # -- новые пары ------------------------------------------------------
+    def refresh_new_pairs(self, force=False):
+        """Тянет список новых пулов в фоне; чаще раза в 15 секунд не дёргаем RPC."""
+        now = time.time()
+        if not force and now - getattr(self, "_pairs_fetched_at", 0) < 15:
+            return
+        if getattr(self, "_pairs_busy", False):
+            return
+        self._pairs_busy = True
+        self._pairs_fetched_at = now
+        if not self._pairs_rows:
+            self._set_pairs_placeholder("pairs_loading")
+
+        def worker():
+            try:
+                rpc_url = RPC_OVERRIDE or DEFAULT_EVM_RPCS["robinhood"]
+                pairs = fetch_new_pairs(rpc_url, KNOWN_POOL_MANAGERS["robinhood"])
+                # названия читаем только для показанных строк, пачкой
+                with concurrent.futures.ThreadPoolExecutor(max_workers=10) as pool:
+                    future_map = {pool.submit(evm_get_token_identity, rpc_url, p["token"]): p
+                                   for p in pairs[:25]}
+                    for fut in concurrent.futures.as_completed(future_map):
+                        try:
+                            _name, symbol = fut.result()
+                        except Exception:
+                            symbol = None
+                        future_map[fut]["symbol"] = symbol
+                self.emit("new_pairs", {"pairs": pairs[:25]})
+            except Exception as e:
+                self.emit("new_pairs", {"error": str(e)})
+
+        threading.Thread(target=worker, daemon=True).start()
+
+    def _tick_new_pairs(self):
+        # обновляем только когда вкладка открыта — иначе это лишняя нагрузка на RPC
+        if self._active_left_tab == "tab_new_pairs":
+            self.refresh_new_pairs()
+        self.root.after(15000, self._tick_new_pairs)
+
+    def _set_pairs_placeholder(self, key):
+        for row_id in self.pairs_tree.get_children():
+            self.pairs_tree.delete(row_id)
+        self._pairs_rows.clear()
+        self.pairs_tree.insert("", "end", values=(self.tr.t(key), ""), tags=("placeholder",))
+
+    def show_new_pairs(self, data):
+        self._pairs_busy = False
+        if data.get("error"):
+            self._set_pairs_placeholder("pairs_failed")
+            return
+        pairs = data.get("pairs") or []
+        if not pairs:
+            self._set_pairs_placeholder("pairs_empty")
+            return
+
+        for row_id in self.pairs_tree.get_children():
+            self.pairs_tree.delete(row_id)
+        self._pairs_rows.clear()
+        for pair in pairs:
+            age = pair["age_seconds"]
+            age_text = f"{age:.0f}с" if age < 60 else f"{age / 60:.0f}м"
+            symbol = pair.get("symbol") or f"{pair['token'][:8]}…"
+            row_id = self.pairs_tree.insert(
+                "", "end", values=(symbol, age_text),
+                tags=("fresh" if age < 300 else "older",))
+            self._pairs_rows[row_id] = pair
+        self.pairs_hint.configure(text=self.tr.t("pairs_hint", n=len(pairs)))
+
+    def on_pair_double_click(self, event):
+        pair = self._pairs_rows.get(self.pairs_tree.identify_row(event.y))
+        if not pair:
+            return
+        if self.worker:
+            self.stop()
+        self._hide_ca_placeholder()
+        self.ca_entry.configure(state="normal")
+        self.ca_entry.delete(0, "end")
+        self.ca_entry.insert(0, pair["token"])
+        self.select_left_tab("tab_token")   # дальше человек смотрит на разбор токена
+        self.start()
 
     def _redraw_risk_bar(self):
         width = self.risk_bar.winfo_width()
