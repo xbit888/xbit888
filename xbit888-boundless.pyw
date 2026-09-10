@@ -1013,7 +1013,7 @@ def _build_bundle_payload(per_wallet, total_supply, window_seconds, hit_cap, tru
 
 def _finish_bundle_check(per_wallet, total_supply, launch_time, hit_cap, window_seconds,
                           funder_fn, emit, tr, stop_event, max_wallets, funder_unsupported=False,
-                          track=None):
+                          track=None, hub_fn=None):
     if not per_wallet:
         emit("bundle_result", {"error": tr.t("bundle_no_early_buys")})
         return
@@ -1032,22 +1032,66 @@ def _finish_bundle_check(per_wallet, total_supply, launch_time, hit_cap, window_
 
     emit("info", tr.t("bundle_linking"))
     wallets = [w for w, _a in sorted(per_wallet.items(), key=lambda kv: kv[1], reverse=True)[:max_wallets]]
-    funders = {}
-    with concurrent.futures.ThreadPoolExecutor(max_workers=12) as pool:
-        future_map = {pool.submit(funder_fn, w): w for w in wallets}
-        for fut in concurrent.futures.as_completed(future_map):
-            if stop_event.is_set():
-                return
-            wallet = future_map[fut]
-            try:
-                funders[wallet] = fut.result()
-            except Exception:
-                funders[wallet] = None
+
+    def lookup_all(addresses):
+        found = {}
+        with concurrent.futures.ThreadPoolExecutor(max_workers=12) as pool:
+            future_map = {pool.submit(funder_fn, a): a for a in addresses}
+            for fut in concurrent.futures.as_completed(future_map):
+                if stop_event.is_set():
+                    return None
+                try:
+                    found[future_map[fut]] = fut.result()
+                except Exception:
+                    found[future_map[fut]] = None
+        return found
+
+    hop1 = lookup_all(wallets)
+    if hop1 is None:
+        return
+
+    # Второй шаг. Типичная схема обхода: мастер-кошелёк пополняет по отдельному
+    # промежуточному кошельку на каждого покупателя, и на первом шаге общего
+    # источника просто не видно. Без хаб-фильтра второй шаг дал бы ложные связи,
+    # поэтому он включается только там, где хабы можно распознать.
+    hop2 = {}
+    if hub_fn:
+        hop2 = lookup_all({f for f in hop1.values() if f}) or {}
+        if stop_event.is_set():
+            return
+
+    def shared(values):
+        counts = {}
+        for v in values:
+            if v:
+                counts[v.lower()] = counts.get(v.lower(), 0) + 1
+        return {v for v, c in counts.items() if c >= 2}
+
+    shared1 = shared(hop1.values())
+    shared2 = shared(hop2.get(f) for f in hop1.values() if f)
+    hubs = set()
+    if hub_fn:
+        for candidate in shared1 | shared2:
+            if hub_fn(candidate):
+                hubs.add(candidate)
+
+    funders, hops = {}, {}
+    for wallet, first in hop1.items():
+        second = hop2.get(first) if first else None
+        if first and first.lower() in shared1 and first.lower() not in hubs:
+            funders[wallet], hops[wallet] = first, 1
+        elif second and second.lower() in shared2 and second.lower() not in hubs:
+            funders[wallet], hops[wallet] = second, 2
+        else:
+            funders[wallet], hops[wallet] = None, 0   # проверен, общего источника нет
 
     if stop_event.is_set():
         return
-    emit("bundle_funders", _build_bundle_payload(per_wallet, total_supply, window_seconds,
-                                                  hit_cap, truncated, funders, False, track))
+    final = _build_bundle_payload(per_wallet, total_supply, window_seconds,
+                                   hit_cap, truncated, funders, False, track)
+    for row in final["wallet_rows"]:
+        row["hops"] = hops.get(row["wallet"], 0)
+    emit("bundle_funders", final)
 
 
 BLOCKSCOUT_API_BASE = {
@@ -1100,6 +1144,27 @@ def evm_find_wallet_funder(chain_id, wallet, max_pages=4):
     if value > 0 and to_addr.lower() == wallet.lower():
         return from_addr
     return None
+
+
+def evm_is_funding_hub(chain_id, address, max_txs=5000):
+    """Контракт или адрес с тысячами транзакций — биржа, мост, роутер. Через такие
+    пополняются тысячи несвязанных людей, и группировать по ним нельзя: иначе
+    каждый, кто вывел деньги с одной биржи, оказался бы "в одном бандле"."""
+    base_url = BLOCKSCOUT_API_BASE.get(chain_id)
+    if not base_url or not address:
+        return False
+    try:
+        req = urllib.request.Request(f"{base_url}/api/v2/addresses/{address}", headers=BLOCKSCOUT_HEADERS)
+        with urllib.request.urlopen(req, timeout=15) as resp:
+            if json.loads(resp.read().decode("utf-8")).get("is_contract"):
+                return True
+        req = urllib.request.Request(f"{base_url}/api/v2/addresses/{address}/counters",
+                                     headers=BLOCKSCOUT_HEADERS)
+        with urllib.request.urlopen(req, timeout=15) as resp:
+            count = int(json.loads(resp.read().decode("utf-8")).get("transactions_count") or 0)
+        return count > max_txs
+    except Exception:
+        return False
 
 
 def evm_estimate_block_by_timestamp(rpc_url, target_ts):
@@ -1413,7 +1478,8 @@ def check_evm_bundles(ca, chain_id, info, rpc_url, window_seconds, emit, tr, sto
                           lambda w: evm_find_wallet_funder(chain_id, w), emit, tr, stop_event,
                           max_wallets, funder_unsupported=funder_unsupported,
                           track={"kind": "evm", "rpc_url": rpc_url, "token": ca,
-                                 "decimals": decimals, "total_supply": total_supply})
+                                 "decimals": decimals, "total_supply": total_supply},
+                          hub_fn=lambda a: evm_is_funding_hub(chain_id, a))
 
 
 def run_bundle_check(ca, emit, tr, stop_event, window_seconds=BUNDLE_WINDOW_SECONDS, rpc_override=None):
@@ -3335,6 +3401,8 @@ class App:
                 solo_index += 1
             if funder:
                 funder_text = funder if len(funder) <= 20 else f"{funder[:8]}…{funder[-6:]}"
+                if row.get("hops") == 2:
+                    funder_text = "↳ " + funder_text   # связь через промежуточный кошелёк
             elif row.get("checked"):
                 funder_text = t("bundle_funder_none")
             else:
