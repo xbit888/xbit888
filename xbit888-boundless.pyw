@@ -246,6 +246,17 @@ TR = {
     "bundle_row_clean": {"ru": "✓ признаков не найдено", "en": "✓ no signs found", "zh": "✓ 未发现迹象"},
     "check_bundles": {"ru": "🔍 Бандлы", "en": "🔍 Bundles", "zh": "🔍 捆绑检测"},
     "bundle_checking": {"ru": "Проверяю бандлы...", "en": "Checking bundles...", "zh": "正在检测捆绑买入..."},
+    "bundle_verdict_unverified": {"ru": "связи не проверены — обозреватель перегружен",
+                                   "en": "links unverified — explorer overloaded",
+                                   "zh": "关联未能核实——区块浏览器过载"},
+    "bundle_row_unverified": {"ru": "? связи не проверены", "en": "? links unverified", "zh": "? 关联未核实"},
+    "bundle_unverified_log": {
+        "ru": "Не удалось проверить связи у {n} из {total} кошельков — обозреватель перегружен. Отсутствие групп здесь ничего не доказывает; нажмите Старт ещё раз.",
+        "en": "Could not verify funding links for {n} of {total} wallets — the explorer is overloaded. No groups here proves nothing; press Start again.",
+        "zh": "{total} 个钱包中有 {n} 个未能核实资金关联——区块浏览器过载。此处没有分组并不说明问题，请重新点击开始。"},
+    "risk_unverified": {"ru": "связи не проверены у {n} из {total} кошельков",
+                         "en": "links unverified for {n} of {total} wallets",
+                         "zh": "{total} 个钱包中有 {n} 个关联未核实"},
     "bundle_linking": {"ru": "Список готов. Проверяю, связаны ли кошельки между собой...",
                         "en": "List ready. Checking whether the wallets are linked...",
                         "zh": "列表已就绪，正在检查钱包之间是否关联..."},
@@ -892,6 +903,12 @@ def track_bundle_holdings(track, wallets, emit, stop_event, interval=20.0):
         stop_event.wait(interval)
 
 
+def links_unverified(data):
+    """Заметная часть кошельков не проверена — тогда "групп нет" ничего не значит."""
+    failed = data.get("links_failed") or 0
+    return failed >= max(2, 0.25 * (data.get("links_total") or 0))
+
+
 def assess_token_risk(data, held_by_wallet=None):
     """Считает оценку чистоты запуска по сигналам, видимым в цепочке.
 
@@ -954,6 +971,13 @@ def assess_token_risk(data, held_by_wallet=None):
     # ни был балл: иначе ярлык противоречит причинам, перечисленным рядом
     if groups and level == "low":
         level = "caution"
+    # и то же самое, если связи просто не удалось проверить: отсутствие улик
+    # из-за отказа обозревателя — не оправдание
+    if links_unverified(data):
+        reasons.append((0, "risk_unverified", {"n": data.get("links_failed"),
+                                               "total": data.get("links_total")}))
+        if level == "low":
+            level = "caution"
     return {"score": score, "level": level, "reasons": reasons}
 
 
@@ -1033,20 +1057,33 @@ def _finish_bundle_check(per_wallet, total_supply, launch_time, hit_cap, window_
     emit("info", tr.t("bundle_linking"))
     wallets = [w for w, _a in sorted(per_wallet.items(), key=lambda kv: kv[1], reverse=True)[:max_wallets]]
 
-    def lookup_all(addresses):
-        found = {}
-        with concurrent.futures.ThreadPoolExecutor(max_workers=12) as pool:
+    def lookup_all(addresses, workers=6):
+        found, failed = {}, set()
+        with concurrent.futures.ThreadPoolExecutor(max_workers=workers) as pool:
             future_map = {pool.submit(funder_fn, a): a for a in addresses}
             for fut in concurrent.futures.as_completed(future_map):
                 if stop_event.is_set():
-                    return None
+                    return None, None
                 try:
                     found[future_map[fut]] = fut.result()
                 except Exception:
-                    found[future_map[fut]] = None
-        return found
+                    failed.add(future_map[fut])
+        return found, failed
 
-    hop1 = lookup_all(wallets)
+    def lookup_with_retry(addresses):
+        found, failed = lookup_all(addresses)
+        if found is None:
+            return None, None
+        if failed:
+            # обозреватель отказывает волнами — даём ему выдохнуть и добираем тише
+            time.sleep(2.0)
+            more, failed = lookup_all(failed, workers=3)
+            if more is None:
+                return None, None
+            found.update(more)
+        return found, failed
+
+    hop1, failed1 = lookup_with_retry(wallets)
     if hop1 is None:
         return
 
@@ -1054,10 +1091,10 @@ def _finish_bundle_check(per_wallet, total_supply, launch_time, hit_cap, window_
     # промежуточному кошельку на каждого покупателя, и на первом шаге общего
     # источника просто не видно. Без хаб-фильтра второй шаг дал бы ложные связи,
     # поэтому он включается только там, где хабы можно распознать.
-    hop2 = {}
+    hop2, failed2 = {}, set()
     if hub_fn:
-        hop2 = lookup_all({f for f in hop1.values() if f}) or {}
-        if stop_event.is_set():
+        hop2, failed2 = lookup_with_retry({f for f in hop1.values() if f})
+        if hop2 is None or stop_event.is_set():
             return
 
     def shared(values):
@@ -1075,13 +1112,15 @@ def _finish_bundle_check(per_wallet, total_supply, launch_time, hit_cap, window_
             if hub_fn(candidate):
                 hubs.add(candidate)
 
-    funders, hops = {}, {}
+    funders, hops, unverified = {}, {}, set(failed1)
     for wallet, first in hop1.items():
         second = hop2.get(first) if first else None
         if first and first.lower() in shared1 and first.lower() not in hubs:
             funders[wallet], hops[wallet] = first, 1
         elif second and second.lower() in shared2 and second.lower() not in hubs:
             funders[wallet], hops[wallet] = second, 2
+        elif first and first in failed2:
+            unverified.add(wallet)                    # второй шаг не дочитался
         else:
             funders[wallet], hops[wallet] = None, 0   # проверен, общего источника нет
 
@@ -1091,6 +1130,8 @@ def _finish_bundle_check(per_wallet, total_supply, launch_time, hit_cap, window_
                                    hit_cap, truncated, funders, False, track)
     for row in final["wallet_rows"]:
         row["hops"] = hops.get(row["wallet"], 0)
+    final["links_total"] = len(wallets)
+    final["links_failed"] = len(unverified)
     emit("bundle_funders", final)
 
 
@@ -1133,7 +1174,8 @@ def evm_find_wallet_funder(chain_id, wallet, max_pages=4):
             except Exception:
                 time.sleep(0.5 * (2 ** attempt))
         if data is None:
-            break
+            # не смогли дочитать историю — это "не знаю", а не "раздатчика нет"
+            raise RuntimeError("explorer unavailable")
         items = data.get("items") or []
         if items:
             oldest = items[-1]
@@ -3533,7 +3575,7 @@ class App:
         self._redraw_risk_bar()
         if risk["reasons"]:
             # рядом с каждой причиной — сколько именно баллов она сняла
-            lines = [f"•  −{penalty:.0f}   {t(key, **kwargs)}"
+            lines = [f"•  {'−' + format(penalty, '.0f') if penalty else ' ?'}   {t(key, **kwargs)}"
                      for penalty, key, kwargs in risk["reasons"]]
         else:
             lines = [f"•  {t('risk_clean')}"]
@@ -3707,6 +3749,12 @@ class App:
                     t("bundle_result_cluster", n=len(info["wallets"]), funder=short_funder, pct=info["pct"]),
                     "error",
                 )
+        elif links_unverified(data):
+            self.append_log(t("bundle_unverified_log", n=data.get("links_failed"),
+                              total=data.get("links_total")), "error")
+            self.bundle_big_val.configure(text=f"{data['early_pct']:.1f}%", fg=GOLD)
+            self.bundle_verdict_lbl.configure(text=t("bundle_verdict_unverified"), fg=GOLD)
+            self.bundle_row_val.configure(text=t("bundle_row_unverified"), fg=GOLD)
         else:
             self.append_log(t("bundle_result_none"), "info")
             self.bundle_big_val.configure(text=f"{data['early_pct']:.1f}%", fg=GREEN)
