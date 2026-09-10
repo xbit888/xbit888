@@ -3664,6 +3664,11 @@ class App:
 
         self._bundle_last_result = data
         self._render_bundle_rows(data)
+        if keep_holdings and self._bundle_held:
+            # связи дочитались — "ещё держат" теперь считается по кошелькам бандла,
+            # а не по всем ранним; без пересчёта до следующего обновления балансов
+            # висела прежняя цифра, и она оказывалась больше самого бандла
+            self._refresh_bundle_held_total()
         self._render_risk()
         if data.get("track") and data.get("wallet_rows") and not keep_holdings:
             self._start_holdings_tracker(data["track"], data["wallet_rows"])
