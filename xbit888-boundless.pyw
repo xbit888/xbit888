@@ -1120,11 +1120,19 @@ def evm_find_wallet_funder(chain_id, wallet, max_pages=4):
         url = f"{base_url}/api/v2/addresses/{wallet}/transactions"
         if next_params:
             url += "?" + urlencode(next_params)
-        try:
-            req = urllib.request.Request(url, headers=BLOCKSCOUT_HEADERS)
-            with urllib.request.urlopen(req, timeout=15) as resp:
-                data = json.loads(resp.read().decode("utf-8"))
-        except Exception:
+        data = None
+        # обозреватель под нагрузкой регулярно отвечает 500; без повтора такой
+        # кошелёк молча считался несвязанным, и размер бандла плавал от запуска
+        # к запуску (12 → 8 → 7 кошельков на одном и том же токене)
+        for attempt in range(4):
+            try:
+                req = urllib.request.Request(url, headers=BLOCKSCOUT_HEADERS)
+                with urllib.request.urlopen(req, timeout=15) as resp:
+                    data = json.loads(resp.read().decode("utf-8"))
+                break
+            except Exception:
+                time.sleep(0.5 * (2 ** attempt))
+        if data is None:
             break
         items = data.get("items") or []
         if items:
