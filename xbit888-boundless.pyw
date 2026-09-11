@@ -254,6 +254,42 @@ TR = {
         "ru": "Не удалось проверить связи у {n} из {total} кошельков — обозреватель перегружен. Отсутствие групп здесь ничего не доказывает; нажмите Старт ещё раз.",
         "en": "Could not verify funding links for {n} of {total} wallets — the explorer is overloaded. No groups here proves nothing; press Start again.",
         "zh": "{total} 个钱包中有 {n} 个未能核实资金关联——区块浏览器过载。此处没有分组并不说明问题，请重新点击开始。"},
+    "risk_hook_block": {"ru": "хук пула может отменять сделки — в том числе продажи",
+                         "en": "the pool hook can cancel trades, sells included",
+                         "zh": "资金池 hook 可以取消交易，包括卖出"},
+    "risk_hook_cut": {"ru": "хук пула забирает себе часть каждой сделки",
+                       "en": "the pool hook takes a cut of every trade",
+                       "zh": "资金池 hook 会从每笔交易中抽成"},
+    "risk_hook_unverified": {"ru": "код хука не опубликован — что он делает, проверить нельзя",
+                              "en": "the hook's code is not published, so nobody can check it",
+                              "zh": "hook 代码未公开，无法核查其行为"},
+    "risk_dynamic_fee": {"ru": "комиссию пула можно менять в любой момент",
+                          "en": "the pool fee can be changed at any moment",
+                          "zh": "资金池手续费可随时更改"},
+    "risk_dev_in_bundle": {"ru": "разработчик связан с бандлом",
+                            "en": "the developer is linked to the bundle",
+                            "zh": "开发者与捆绑钱包有关联"},
+    "risk_dev_holds": {"ru": "разработчик держит {pct:.1f}% предложения",
+                        "en": "the developer holds {pct:.1f}% of supply",
+                        "zh": "开发者持有 {pct:.1f}% 的供应量"},
+    "risk_top_holders": {"ru": "{n} крупнейших кошельков держат {pct:.0f}%",
+                          "en": "the top {n} wallets hold {pct:.0f}%",
+                          "zh": "前 {n} 大钱包持有 {pct:.0f}%"},
+    "risk_same_block": {"ru": "{n} кошельков купили в том же блоке, где создан пул",
+                         "en": "{n} wallets bought in the same block the pool was created",
+                         "zh": "{n} 个钱包在资金池创建的同一区块内买入"},
+    "risk_fresh_wallets": {"ru": "{n} из {total} ранних кошельков — совсем новые",
+                            "en": "{n} of {total} early wallets were brand new",
+                            "zh": "{total} 个早期钱包中有 {n} 个是全新钱包"},
+    "risk_similar_spend": {"ru": "{n} кошельков потратили почти одинаковую сумму",
+                            "en": "{n} wallets spent almost the same amount",
+                            "zh": "{n} 个钱包花费的金额几乎相同"},
+    "risk_serial_bundler": {"ru": "этот бандлер уже встречался на других токенах: {n}",
+                             "en": "this bundler was already seen on {n} other token(s)",
+                             "zh": "该捆绑者已在其他 {n} 个代币上出现过"},
+    "log_serial_bundler": {"ru": "Этот бандлер уже встречался раньше — на токенах: {tokens}",
+                            "en": "This bundler has been seen before, on: {tokens}",
+                            "zh": "该捆绑者此前出现过，涉及代币：{tokens}"},
     "risk_unverified": {"ru": "связи не проверены у {n} из {total} кошельков",
                          "en": "links unverified for {n} of {total} wallets",
                          "zh": "{total} 个钱包中有 {n} 个关联未核实"},
@@ -317,6 +353,9 @@ TR = {
 
     "tab_token": {"ru": "ТОКЕН", "en": "TOKEN", "zh": "代币"},
     "tab_new_pairs": {"ru": "НОВЫЕ", "en": "NEW PAIRS", "zh": "新交易对"},
+    "tab_history": {"ru": "ИСТОРИЯ", "en": "HISTORY", "zh": "历史"},
+    "export_csv": {"ru": "Экспорт в CSV", "en": "Export CSV", "zh": "导出 CSV"},
+    "export_done": {"ru": "Сохранено: {path}", "en": "Saved: {path}", "zh": "已保存：{path}"},
     "tab_migrated": {"ru": "MIGRATED", "en": "MIGRATED", "zh": "已迁移"},
     "pairs_hint": {"ru": "{n} пулов создано недавно · двойной клик — разобрать токен",
                     "en": "{n} pools created recently · double-click to analyse",
@@ -338,6 +377,16 @@ TR = {
     "row_network": {"ru": "СЕТЬ", "en": "NETWORK", "zh": "网络"},
     "row_dex": {"ru": "DEX", "en": "DEX", "zh": "交易所"},
     "row_price": {"ru": "ЦЕНА", "en": "PRICE", "zh": "价格"},
+    "row_hook": {"ru": "ХУК", "en": "HOOK", "zh": "HOOK"},
+    "row_fee": {"ru": "КОМИССИЯ", "en": "FEE", "zh": "手续费"},
+    "row_dev": {"ru": "РАЗРАБ", "en": "DEV", "zh": "开发者"},
+    "row_top10": {"ru": "ТОП-10", "en": "TOP 10", "zh": "前10"},
+    "hook_none": {"ru": "нет", "en": "none", "zh": "无"},
+    "hook_blocks": {"ru": "может блок.", "en": "can block", "zh": "可拦截"},
+    "hook_cut": {"ru": "берёт долю", "en": "takes cut", "zh": "抽成"},
+    "hook_watch": {"ru": "следит", "en": "observes", "zh": "监听"},
+    "fee_dynamic": {"ru": "меняется", "en": "dynamic", "zh": "可变"},
+    "dev_in_bundle": {"ru": "в бандле", "en": "in bundle", "zh": "在捆绑中"},
     "row_liquidity": {"ru": "ЛИКВИДНОСТЬ", "en": "LIQUIDITY", "zh": "流动性"},
 
     "last_price_label": {"ru": "MCAP", "en": "MCAP", "zh": "MCAP"},
@@ -909,6 +958,99 @@ def links_unverified(data):
     return failed >= max(2, 0.25 * (data.get("links_total") or 0))
 
 
+def app_data_dir():
+    base = os.environ.get("APPDATA") or os.path.expanduser("~")
+    path = os.path.join(base, "XBIT888")
+    os.makedirs(path, exist_ok=True)
+    return path
+
+
+class LocalStore:
+    """Маленькое JSON-хранилище в %APPDATA%/XBIT888. Только локально, никуда не уходит."""
+
+    def __init__(self, name, default):
+        self.path = os.path.join(app_data_dir(), name)
+        self.lock = threading.Lock()
+        self.default = default
+        try:
+            with open(self.path, encoding="utf-8") as fh:
+                self.data = json.load(fh)
+        except Exception:
+            self.data = json.loads(json.dumps(default))
+
+    def save(self):
+        with self.lock:
+            tmp = self.path + ".tmp"
+            with open(tmp, "w", encoding="utf-8") as fh:
+                json.dump(self.data, fh, ensure_ascii=False, indent=1)
+            os.replace(tmp, self.path)   # атомарно: обрыв посреди записи не портит файл
+
+
+class BundlerMemory(LocalStore):
+    """Помнит мастер-кошельки бандлов между проверками: тот, кто бандлил один
+    токен, почти наверняка будет бандлить и следующий."""
+
+    def __init__(self):
+        super().__init__("bundlers.json", {})
+
+    def record(self, token, symbol, clusters):
+        stamp = time.strftime("%Y-%m-%d %H:%M")
+        for master, info in (clusters or {}).items():
+            entry = self.data.setdefault(master.lower(), {})
+            entry[token.lower()] = {"symbol": symbol or "", "date": stamp,
+                                    "wallets": len(info.get("wallets") or []),
+                                    "pct": round(info.get("pct") or 0.0, 2)}
+        self.save()
+
+    def lookup(self, addresses, exclude_token):
+        """Какие из адресов уже были мастерами бандлов на других токенах."""
+        found = {}
+        for address in addresses:
+            if not address:
+                continue
+            tokens = {t: v for t, v in (self.data.get(address.lower()) or {}).items()
+                      if t != (exclude_token or "").lower()}
+            if tokens:
+                found[address.lower()] = tokens
+        return found
+
+
+class CheckHistory(LocalStore):
+    def __init__(self):
+        super().__init__("history.json", [])
+
+    def add(self, row):
+        # одна запись на токен: повторная проверка обновляет её и поднимает наверх
+        self.data = [r for r in self.data if r.get("token", "").lower() != row["token"].lower()]
+        self.data.insert(0, row)
+        del self.data[500:]
+        self.save()
+
+    def export_csv(self, path):
+        import csv
+        fields = ["time", "token", "symbol", "chain", "score", "level", "bundle_pct",
+                  "early_pct", "groups", "wallets", "serial_bundler"]
+        with open(path, "w", newline="", encoding="utf-8-sig") as fh:   # BOM — чтобы Excel понял UTF-8
+            writer = csv.DictWriter(fh, fieldnames=fields, extrasaction="ignore")
+            writer.writeheader()
+            writer.writerows(self.data)
+
+
+def dev_linked_to_bundle(data):
+    """Разработчик сам в бандле, либо это он пополнял кошельки бандла (на 1–2 шага)."""
+    dev_addr = ((data.get("dev") or {}).get("address") or "").lower()
+    if not dev_addr:
+        return False
+    grouped = {r["wallet"].lower() for r in (data.get("wallet_rows") or []) if r.get("group")}
+    if dev_addr in grouped or dev_addr in {m.lower() for m in (data.get("bundle_clusters") or {})}:
+        return True
+    for wallet, hops in (data.get("masters") or {}).items():
+        if wallet.lower() in grouped and dev_addr in {(hops.get("hop1") or "").lower(),
+                                                      (hops.get("hop2") or "").lower()}:
+            return True
+    return False
+
+
 def assess_token_risk(data, held_by_wallet=None):
     """Считает оценку чистоты запуска по сигналам, видимым в цепочке.
 
@@ -953,9 +1095,60 @@ def assess_token_risk(data, held_by_wallet=None):
 
         top_now = sorted((held_by_wallet.get(r["wallet"], 0.0) for r in rows), reverse=True)[:10]
         concentration = sum(top_now)
-        if concentration >= 20:
+        # если есть реальный список держателей, концентрацию считаем по нему —
+        # иначе один и тот же риск штрафовался бы дважды двумя похожими строками
+        if concentration >= 20 and not (data.get("holders") or {}).get("n"):
             reasons.append((min(20, (concentration - 20) * 0.5), "risk_concentration",
                             {"pct": concentration}))
+
+    # ---- контракт пула: хук Uniswap V4 ----
+    hook = data.get("hook") or {}
+    profile = data.get("hook_profile") or {}
+    if hook.get("has_hook"):
+        # общий проверенный хук лаунчпада и хук, развёрнутый под один токен, — разный риск
+        shared = (profile.get("pools_recent") or 0) >= 20 and profile.get("verified")
+        if hook.get("can_block_swaps"):
+            reasons.append((8 if shared else 22, "risk_hook_block", {}))
+        if hook.get("can_take_cut"):
+            reasons.append((4 if shared else 12, "risk_hook_cut", {}))
+        if profile.get("verified") is False:
+            reasons.append((10, "risk_hook_unverified", {}))
+    if hook.get("dynamic_fee"):
+        reasons.append((4 if (profile.get("pools_recent") or 0) >= 20 else 10, "risk_dynamic_fee", {}))
+
+    # ---- разработчик ----
+    dev = data.get("dev") or {}
+    dev_addr = (dev.get("address") or "").lower()
+    if dev_addr:
+        if dev_linked_to_bundle(data):
+            reasons.append((30, "risk_dev_in_bundle", {}))
+        held = dev.get("held_pct")
+        if held is not None and held >= 5:
+            reasons.append((min(20, (held - 3) * 1.5), "risk_dev_holds", {"pct": held}))
+
+    # ---- держатели сейчас ----
+    holders = data.get("holders") or {}
+    if (holders.get("top_pct") or 0) >= 40:
+        reasons.append((min(20, (holders["top_pct"] - 30) * 0.5), "risk_top_holders",
+                        {"pct": holders["top_pct"], "n": holders.get("n") or 10}))
+
+    # ---- признаки без обозревателя: слабее прямой связи, поэтому весят меньше ----
+    signals = data.get("signals") or {}
+    if (signals.get("same_block") or 0) >= 3:
+        reasons.append((min(15, signals["same_block"] * 3), "risk_same_block", {"n": signals["same_block"]}))
+    total_early = signals.get("total") or 0
+    if (signals.get("fresh") or 0) >= 4 and signals["fresh"] >= total_early * 0.5:
+        reasons.append((min(12, signals["fresh"] * 1.5), "risk_fresh_wallets",
+                        {"n": signals["fresh"], "total": total_early}))
+    if (signals.get("similar_spend") or 0) >= 4:
+        reasons.append((min(12, signals["similar_spend"] * 2), "risk_similar_spend",
+                        {"n": signals["similar_spend"]}))
+
+    # ---- повторный бандлер ----
+    known = data.get("known_masters") or {}
+    if known:
+        other_tokens = {t for tokens in known.values() for t in tokens}
+        reasons.append((25, "risk_serial_bundler", {"n": len(other_tokens)}))
 
     reasons = [(penalty, key, kwargs) for penalty, key, kwargs in reasons if penalty >= 1]
     reasons.sort(key=lambda item: item[0], reverse=True)   # сначала то, что весит больше
@@ -1037,7 +1230,7 @@ def _build_bundle_payload(per_wallet, total_supply, window_seconds, hit_cap, tru
 
 def _finish_bundle_check(per_wallet, total_supply, launch_time, hit_cap, window_seconds,
                           funder_fn, emit, tr, stop_event, max_wallets, funder_unsupported=False,
-                          track=None, hub_fn=None):
+                          track=None, hub_fn=None, extras=None, late_fn=None):
     if not per_wallet:
         emit("bundle_result", {"error": tr.t("bundle_no_early_buys")})
         return
@@ -1050,8 +1243,26 @@ def _finish_bundle_check(per_wallet, total_supply, launch_time, hit_cap, window_
     first = _build_bundle_payload(per_wallet, total_supply, window_seconds,
                                    hit_cap, truncated, None, funder_unsupported, track)
     first["funders_pending"] = not funder_unsupported
+    first.update(extras or {})
     emit("bundle_result", first)
+
+    late = {}
+    late_thread = None
+    if late_fn:
+        def run_late():
+            try:
+                late.update(late_fn() or {})
+            except Exception:
+                pass
+        late_thread = threading.Thread(target=run_late, daemon=True)
+        late_thread.start()
+
     if funder_unsupported:
+        if late_thread:
+            late_thread.join(60)
+            if late and not stop_event.is_set():
+                again = dict(first, funders_pending=False, **late)
+                emit("bundle_funders", again)
         return
 
     emit("info", tr.t("bundle_linking"))
@@ -1132,6 +1343,12 @@ def _finish_bundle_check(per_wallet, total_supply, launch_time, hit_cap, window_
         row["hops"] = hops.get(row["wallet"], 0)
     final["links_total"] = len(wallets)
     final["links_failed"] = len(unverified)
+    final.update(extras or {})
+    if late_thread:
+        late_thread.join(60)
+    final.update(late)
+    final["masters"] = {w: {"hop1": hop1.get(w), "hop2": hop2.get(hop1.get(w)) if hop1.get(w) else None}
+                        for w in wallets}
     emit("bundle_funders", final)
 
 
@@ -1194,6 +1411,79 @@ def evm_find_wallet_funder(chain_id, wallet, max_pages=4):
     if value > 0 and to_addr.lower() == wallet.lower():
         return from_addr
     return None
+
+
+def blockscout_get(chain_id, path, tries=4):
+    """GET к API обозревателя с повторами: под нагрузкой он регулярно отвечает 500."""
+    base_url = BLOCKSCOUT_API_BASE.get(chain_id)
+    if not base_url:
+        return None
+    last_error = None
+    for attempt in range(tries):
+        try:
+            req = urllib.request.Request(f"{base_url}/api/v2/{path}", headers=BLOCKSCOUT_HEADERS)
+            with urllib.request.urlopen(req, timeout=15) as resp:
+                return json.loads(resp.read().decode("utf-8"))
+        except Exception as e:
+            last_error = e
+            time.sleep(0.5 * (2 ** attempt))
+    raise last_error
+
+
+def evm_dev_profile(chain_id, rpc_url, token, total_supply, decimals, per_wallet):
+    """Кто создал токен и сколько у него сейчас.
+
+    Если токен выпущен через фабрику лаунчпада, "создатель" в обозревателе — это
+    сам контракт фабрики, поэтому разработчика берём как отправителя транзакции
+    создания: именно он нажал кнопку."""
+    try:
+        info = blockscout_get(chain_id, f"addresses/{token}") or {}
+    except Exception:
+        return None
+    creator = info.get("creator_address_hash")
+    dev = None
+    tx_hash = info.get("creation_transaction_hash")
+    if tx_hash:
+        try:
+            dev = (evm_rpc_call(rpc_url, "eth_getTransactionByHash", [tx_hash]) or {}).get("from")
+        except Exception:
+            dev = None
+    dev = dev or creator
+    if not dev:
+        return None
+    try:
+        held = evm_get_token_balance(rpc_url, token, dev) / (10 ** decimals)
+    except Exception:
+        held = None
+    bought = next((amount for wallet, amount in per_wallet.items() if wallet.lower() == dev.lower()), 0.0)
+    return {
+        "address": dev,
+        "via_factory": bool(creator and creator.lower() != dev.lower()),
+        "held_pct": (held / total_supply * 100) if held is not None and total_supply else None,
+        "early_buy_pct": (bought / total_supply * 100) if total_supply else 0.0,
+    }
+
+
+def evm_top_holders(chain_id, token, total_supply, decimals, pool_manager, n=10):
+    """Крупнейшие держатели сейчас. Контракты (сам пул, локеры, сжигание) в сумму
+    концентрации не входят — это не люди, которые могут продать."""
+    try:
+        data = blockscout_get(chain_id, f"tokens/{token}/holders") or {}
+    except Exception:
+        return None
+    skip = {(pool_manager or "").lower(), "0x0000000000000000000000000000000000000000",
+            "0x000000000000000000000000000000000000dead"}
+    wallets, contracts = [], []
+    for item in data.get("items") or []:
+        address = item.get("address") or {}
+        addr = (address.get("hash") or "").lower()
+        if not addr or addr in skip:
+            continue
+        pct = (int(item.get("value") or 0) / (10 ** decimals) / total_supply * 100) if total_supply else 0.0
+        (contracts if address.get("is_contract") else wallets).append({"address": addr, "pct": pct})
+    top = wallets[:n]
+    return {"top_pct": sum(w["pct"] for w in top), "top": top, "n": len(top),
+            "contracts_pct": sum(c["pct"] for c in contracts)}
 
 
 def evm_is_funding_hub(chain_id, address, max_txs=5000):
@@ -1325,11 +1615,76 @@ def evm_find_pool_initialize(rpc_url, pool_manager, pool_id):
     if not logs:
         return None
     log = min(logs, key=lambda l: int(l["blockNumber"], 16))
+    words = [log["data"][2 + i:2 + i + 64] for i in range(0, len(log["data"]) - 2, 64)]
+    fee = int(words[0], 16) if words else 0
+    hooks = "0x" + words[2][24:] if len(words) > 2 else "0x" + "0" * 40
     return {
         "block": int(log["blockNumber"], 16),
         "currency0": evm_topic_to_address(log["topics"][2]),
         "currency1": evm_topic_to_address(log["topics"][3]),
+        "fee": fee,
+        "hooks": hooks,
     }
+
+
+# В Uniswap V4 права хука закодированы в младших битах его адреса — адрес
+# майнят под нужные флаги. Поэтому по одному адресу видно, во что хук может
+# вмешиваться, без запроса к сети и без доверия к исходникам.
+V4_HOOK_BEFORE_SWAP = 1 << 7
+V4_HOOK_AFTER_SWAP = 1 << 6
+V4_HOOK_BEFORE_SWAP_RETURNS_DELTA = 1 << 3
+V4_HOOK_AFTER_SWAP_RETURNS_DELTA = 1 << 2
+V4_HOOK_BEFORE_REMOVE_LIQUIDITY = 1 << 9
+V4_DYNAMIC_FEE_FLAG = 0x800000
+
+
+def describe_v4_hook(hooks_address, fee):
+    """Что хук пула способен делать со сделками."""
+    bits = int(hooks_address, 16) & 0x3FFF
+    has_hook = int(hooks_address, 16) != 0
+    return {
+        "address": hooks_address,
+        "has_hook": has_hook,
+        # beforeSwap может откатить сделку — то есть, например, запретить продажу
+        "can_block_swaps": has_hook and bool(bits & V4_HOOK_BEFORE_SWAP),
+        # *_RETURNS_DELTA позволяют хуку забирать себе часть суммы сделки
+        "can_take_cut": has_hook and bool(bits & (V4_HOOK_BEFORE_SWAP_RETURNS_DELTA |
+                                                   V4_HOOK_AFTER_SWAP_RETURNS_DELTA)),
+        "watches_swaps": has_hook and bool(bits & (V4_HOOK_BEFORE_SWAP | V4_HOOK_AFTER_SWAP)),
+        "dynamic_fee": bool(fee & V4_DYNAMIC_FEE_FLAG),
+        "fee_pct": (fee & 0x7FFFFF) / 10000 if not fee & V4_DYNAMIC_FEE_FLAG else None,
+    }
+
+
+def evm_hook_profile(chain_id, rpc_url, pool_manager, hooks_address, lookback_blocks=36000):
+    """Насколько хук распространён и проверен ли его код.
+
+    Хук, который стоит на сотнях пулов, — это чаще всего общий контракт
+    лаунчпада; хук, развёрнутый под один-единственный токен, да ещё и без
+    опубликованного кода, — повод насторожиться."""
+    profile = {"pools_recent": None, "verified": None}
+    if int(hooks_address, 16) == 0:
+        return profile
+    try:
+        latest = int(evm_rpc_call(rpc_url, "eth_blockNumber", []), 16)
+        logs = evm_get_logs_retry(rpc_url, {
+            "address": pool_manager, "topics": [UNISWAP_V4_INITIALIZE_TOPIC],
+            "fromBlock": hex(max(0, latest - lookback_blocks)), "toBlock": hex(latest),
+        })
+        target = hooks_address.lower()[2:]
+        profile["pools_recent"] = sum(1 for lg in logs if lg["data"][2 + 128 + 24:2 + 192].lower() == target)
+    except Exception:
+        pass
+    base_url = BLOCKSCOUT_API_BASE.get(chain_id)
+    if base_url:
+        try:
+            req = urllib.request.Request(f"{base_url}/api/v2/addresses/{hooks_address}",
+                                         headers=BLOCKSCOUT_HEADERS)
+            with urllib.request.urlopen(req, timeout=15) as resp:
+                profile["verified"] = bool(json.loads(resp.read().decode("utf-8")).get("is_verified"))
+        except Exception:
+            pass
+    return profile
 
 
 # singleton PoolManager сети: все пулы Uniswap V4 живут в одном контракте
@@ -1436,6 +1791,11 @@ def check_evm_bundles(ca, chain_id, info, rpc_url, window_seconds, emit, tr, sto
         pool_id = info["pairAddress"]
         pool_manager = find_uniswap_v4_pool_manager(rpc_url, ca)
         quote_address = (info.get("quoteToken") or {}).get("address")
+    if (not pool_manager or not pool_id) and chain_id in KNOWN_POOL_MANAGERS:
+        found = discover_v4_pool_by_initialize(rpc_url, KNOWN_POOL_MANAGERS[chain_id], ca)
+        if found:
+            pool_manager, pool_id = found["pool_manager"], found["pool_id"]
+            quote_address = quote_address or found["quote_token"]
     if not pool_manager or not pool_id:
         discovered = discover_evm_pool_via_rpc(rpc_url, ca)
         if not discovered:
@@ -1500,10 +1860,15 @@ def check_evm_bundles(ca, chain_id, info, rpc_url, window_seconds, emit, tr, sto
         amount0 = evm_word_signed(lg["data"], 0)
         amount1 = evm_word_signed(lg["data"], 1)
         our_amount = amount0 if is_token0 else amount1
+        quote_amount = amount1 if is_token0 else amount0
         if our_amount > 0:  # положительное = трейдер получает наш токен = покупка
-            buys_by_tx[lg["transactionHash"]] = buys_by_tx.get(lg["transactionHash"], 0.0) +                 our_amount / (10 ** decimals)
+            entry = buys_by_tx.setdefault(lg["transactionHash"], {
+                "tokens": 0.0, "quote": 0, "block": int(lg["blockNumber"], 16)})
+            entry["tokens"] += our_amount / (10 ** decimals)
+            entry["quote"] += abs(quote_amount)   # сколько трейдер заплатил, в единицах квоты
 
     per_wallet = {}
+    buys = []   # по одной записи на покупку — для признаков, не зависящих от обозревателя
     if buys_by_tx:
         tx_hashes = list(buys_by_tx.keys())
         with concurrent.futures.ThreadPoolExecutor(max_workers=12) as pool:
@@ -1521,7 +1886,25 @@ def check_evm_bundles(ca, chain_id, info, rpc_url, window_seconds, emit, tr, sto
                     continue
                 wallet = tx.get("from") if tx else None
                 if wallet:
-                    per_wallet[wallet] = per_wallet.get(wallet, 0.0) + buys_by_tx[tx_hash]
+                    info_tx = buys_by_tx[tx_hash]
+                    per_wallet[wallet] = per_wallet.get(wallet, 0.0) + info_tx["tokens"]
+                    buys.append({"wallet": wallet, "block": info_tx["block"], "quote": info_tx["quote"],
+                                 "nonce": int(tx.get("nonce") or "0x0", 16)})
+
+    hook = describe_v4_hook(init.get("hooks", "0x" + "0" * 40), init.get("fee", 0))
+    extras = {
+        "hook": hook,
+        "signals": compute_launch_signals(buys, first_block),
+        "token": ca, "chain_id": chain_id,
+    }
+
+    def late_extras():
+        # то, что требует обозревателя или лишних запросов, — во вторую волну,
+        # чтобы не задерживать появление списка покупателей
+        late = {"hook_profile": evm_hook_profile(chain_id, rpc_url, pool_manager, hook["address"])}
+        late["dev"] = evm_dev_profile(chain_id, rpc_url, ca, total_supply, decimals, per_wallet)
+        late["holders"] = evm_top_holders(chain_id, ca, total_supply, decimals, pool_manager)
+        return late
 
     funder_unsupported = chain_id not in BLOCKSCOUT_API_BASE
     _finish_bundle_check(per_wallet, total_supply, launch_ts, False, window_seconds,
@@ -1529,7 +1912,36 @@ def check_evm_bundles(ca, chain_id, info, rpc_url, window_seconds, emit, tr, sto
                           max_wallets, funder_unsupported=funder_unsupported,
                           track={"kind": "evm", "rpc_url": rpc_url, "token": ca,
                                  "decimals": decimals, "total_supply": total_supply},
-                          hub_fn=lambda a: evm_is_funding_hub(chain_id, a))
+                          hub_fn=lambda a: evm_is_funding_hub(chain_id, a),
+                          extras=extras, late_fn=late_extras)
+
+
+def compute_launch_signals(buys, launch_block):
+    """Признаки скоординированной закупки, которые видны прямо из логов и транзакций.
+
+    Они слабее прямой связи через раздатчика, но не зависят от обозревателя:
+    когда тот перегружен и связи не читаются, эти признаки всё равно работают."""
+    wallets = {}
+    for b in buys:
+        w = wallets.setdefault(b["wallet"].lower(), {"block": b["block"], "quote": 0, "nonce": b["nonce"]})
+        w["block"] = min(w["block"], b["block"])
+        w["quote"] += b["quote"]
+        w["nonce"] = min(w["nonce"], b["nonce"])
+    total = len(wallets)
+    # купить в том же блоке, где создан пул, можно только заранее зная о запуске
+    same_block = sum(1 for w in wallets.values() if w["block"] == launch_block)
+    # nonce покупки 0–2: у кошелька до этого почти не было ни одной транзакции
+    fresh = sum(1 for w in wallets.values() if w["nonce"] <= 2)
+
+    # самая большая группа кошельков, потративших почти одну и ту же сумму (±5%)
+    spends = sorted(w["quote"] for w in wallets.values() if w["quote"] > 0)
+    similar, i = 0, 0
+    for j in range(len(spends)):
+        while spends[j] > spends[i] * 1.05:
+            i += 1
+        similar = max(similar, j - i + 1)
+    return {"total": total, "same_block": same_block, "fresh": fresh,
+            "similar_spend": similar if similar >= 3 else 0}
 
 
 def run_bundle_check(ca, emit, tr, stop_event, window_seconds=BUNDLE_WINDOW_SECONDS, rpc_override=None):
@@ -1794,6 +2206,52 @@ def detect_evm_chain_for_token(token_address, candidate_chains=("robinhood", "ba
         except Exception:
             continue
     return None, None
+
+
+def discover_v4_pool_by_initialize(rpc_url, pool_manager, token_address):
+    """Находит пул токена по событию его создания.
+
+    currency0/currency1 в Initialize проиндексированы, поэтому фильтр по токену
+    работает на узле и не зависит от того, торговался ли токен недавно. Прежний
+    поиск через свежие переводы токена слеп на всём, что затихло дольше пары часов."""
+    topic = evm_pad_address_topic(token_address)
+    try:
+        latest = int(evm_rpc_call(rpc_url, "eth_blockNumber", []), 16)
+    except Exception:
+        return None
+    ranges, prev = [], latest
+    for span in (200_000, 2_000_000):
+        floor = max(0, latest - span)
+        ranges.append((floor, prev)); prev = max(0, floor - 1)
+        if floor == 0:
+            break
+    if prev > 0:
+        ranges.append((0, prev))
+
+    def query(topics, from_block, to_block):
+        # сбой RPC здесь нельзя принимать за "пула нет": это превращает токен в
+        # "не торговался", поэтому ошибка повторяется, а не проглатывается
+        params = {"address": pool_manager, "topics": topics,
+                  "fromBlock": hex(from_block), "toBlock": hex(to_block)}
+        return rpc_call_retry(lambda: evm_rpc_call(rpc_url, "eth_getLogs", [params]) or [],
+                              tries=5, delay=0.8)
+
+    for from_block, to_block in ranges:
+        found = []
+        for topics in ([UNISWAP_V4_INITIALIZE_TOPIC, None, topic],
+                       [UNISWAP_V4_INITIALIZE_TOPIC, None, None, topic]):
+            try:
+                found += query(topics, from_block, to_block)
+            except Exception:
+                pass
+        if found:
+            # у токена может быть несколько пулов; для анализа запуска нужен первый
+            log = min(found, key=lambda l: int(l["blockNumber"], 16))
+            c0 = evm_topic_to_address(log["topics"][2])
+            c1 = evm_topic_to_address(log["topics"][3])
+            return {"pool_manager": pool_manager, "pool_id": log["topics"][1],
+                    "quote_token": c1 if c0.lower() == token_address.lower() else c0}
+    return None
 
 
 def discover_evm_pool_via_rpc(rpc_url, token_address, lookback_blocks=100000,
@@ -2068,7 +2526,11 @@ def watch_evm_without_dexscreener(ca, interval, emit, stop_event, tr, rpc_overri
             emit("error", tr.t("log_no_pair"))
             return
 
-    pool = discover_evm_pool_via_rpc(rpc_url, ca)
+    pool = None
+    if chain_id in KNOWN_POOL_MANAGERS:
+        pool = discover_v4_pool_by_initialize(rpc_url, KNOWN_POOL_MANAGERS[chain_id], ca)
+    if not pool:
+        pool = discover_evm_pool_via_rpc(rpc_url, ca)
     if not pool or not pool.get("quote_token"):
         emit("error", tr.t("log_no_pair"))
         return
@@ -2300,6 +2762,9 @@ class App:
         self.stop_event = None
         self._bundle_stop_event = None
         self._holdings_stop = None
+        self._dev_address = None
+        self.bundlers = BundlerMemory()
+        self.history = CheckHistory()
         self.worker = None
         self.meta_widgets = {}
 
@@ -2583,9 +3048,9 @@ class App:
         tabs = tk.Frame(card, bg=PANEL)
         tabs.pack(fill="x", padx=1, pady=(1, 0))
         self.left_tabs = {}
-        for key in ("tab_token", "tab_new_pairs", "tab_migrated"):
+        for key in ("tab_token", "tab_new_pairs", "tab_migrated", "tab_history"):
             btn = tk.Label(tabs, bg=PANEL, fg=MUTED, font=(MONO, 8, "bold"),
-                            padx=8, pady=6, cursor="hand2")
+                            padx=6, pady=6, cursor="hand2")
             btn.pack(side="left")
             btn.bind("<Button-1>", lambda e, k=key: self.select_left_tab(k))
             self.left_tabs[key] = btn
@@ -2620,14 +3085,22 @@ class App:
 
         tk.Frame(pad, bg=BORDER, height=1).pack(fill="x", pady=(0, 10))
 
+        # сетка в две колонки: восемь полей занимают высоту прежних четырёх
+        grid = tk.Frame(pad, bg=PANEL)
+        grid.pack(fill="x")
+        grid.grid_columnconfigure(0, weight=1, uniform="tok")
+        grid.grid_columnconfigure(1, weight=1, uniform="tok")
         self.token_rows = {}
-        for key, field in [("row_network", "network"), ("row_dex", "dex"),
-                            ("row_price", "price"), ("row_liquidity", "liquidity")]:
-            row = tk.Frame(pad, bg=PANEL)
-            row.pack(fill="x", pady=4)
-            cap = tk.Label(row, bg=PANEL, fg=MUTED, font=(MONO, 8, "bold"), anchor="w")
+        fields = [("row_network", "network"), ("row_dex", "dex"),
+                  ("row_price", "price"), ("row_liquidity", "liquidity"),
+                  ("row_hook", "hook"), ("row_fee", "fee"),
+                  ("row_dev", "dev"), ("row_top10", "top10")]
+        for i, (key, field) in enumerate(fields):
+            cell = tk.Frame(grid, bg=PANEL)
+            cell.grid(row=i // 2, column=i % 2, sticky="w", pady=3)
+            cap = tk.Label(cell, bg=PANEL, fg=MUTED, font=(MONO, 8, "bold"), anchor="w")
             cap.pack(anchor="w")
-            val = tk.Label(row, text="—", bg=PANEL, fg=TEXT, font=("Consolas", 11, "bold"), anchor="w")
+            val = tk.Label(cell, text="—", bg=PANEL, fg=TEXT, font=(MONO, 10, "bold"), anchor="w")
             val.pack(anchor="w")
             self.token_rows[field] = (key, cap, val)
         self.meta_labels = self.token_rows  # обратная совместимость с update_meta()
@@ -2670,10 +3143,75 @@ class App:
         vsb.pack(side="right", fill="y")
         self._pairs_rows = {}
 
+        # история проверок
+        hist = tk.Frame(holder, bg=PANEL, padx=10, pady=10)
+        self.left_panes["tab_history"] = hist
+        hist_table = tk.Frame(hist, bg=PANEL)
+        hist_table.pack(fill="both", expand=True)
+        self.history_tree = ttk.Treeview(hist_table, columns=("token", "score", "when"),
+                                          show="headings", style="Treeview", height=9)
+        self.history_tree.column("token", width=90, anchor="w", stretch=True)
+        self.history_tree.column("score", width=48, anchor="e", stretch=False)
+        self.history_tree.column("when", width=70, anchor="e", stretch=False)
+        for level, color in (("high", RED), ("caution", GOLD), ("low", GREEN)):
+            self.history_tree.tag_configure(level, foreground=color)
+        self.history_tree.bind("<Double-Button-1>", self.on_history_double_click)
+        hvsb = ttk.Scrollbar(hist_table, orient="vertical", command=self.history_tree.yview)
+        self.history_tree.configure(yscrollcommand=hvsb.set)
+        self.history_tree.pack(side="left", fill="both", expand=True)
+        hvsb.pack(side="right", fill="y")
+        self.export_btn = ttk.Button(hist, style="Ghost.TButton", command=self.export_history)
+        self.export_btn.pack(fill="x", pady=(8, 0))
+        self._history_rows = {}
+
         self.migrated_lbl = tk.Label(self.left_panes["tab_migrated"], bg=PANEL, fg=MUTED,
                                       font=(MONO, 8), anchor="nw", justify="left",
                                       wraplength=230)
         self.migrated_lbl.pack(fill="both", expand=True)
+
+    def refresh_history_tab(self):
+        if not hasattr(self, "history_tree"):
+            return
+        for row_id in self.history_tree.get_children():
+            self.history_tree.delete(row_id)
+        self._history_rows.clear()
+        for row in self.history.data[:200]:
+            label = row.get("symbol") or f"{row['token'][:8]}…"
+            if row.get("serial_bundler"):
+                label = "↺ " + label   # мастер этого бандла встречался раньше
+            row_id = self.history_tree.insert(
+                "", "end", values=(label, f"{row.get('score', '—')}%", (row.get("time") or "")[5:]),
+                tags=(row.get("level") or "",))
+            self._history_rows[row_id] = row
+
+    def on_history_double_click(self, event):
+        row = self._history_rows.get(self.history_tree.identify_row(event.y))
+        if row:
+            self.load_token(row["token"])
+
+    def export_history(self):
+        from tkinter import filedialog
+        path = filedialog.asksaveasfilename(
+            defaultextension=".csv", initialfile="xbit888_history.csv",
+            filetypes=[("CSV", "*.csv")], title=self.tr.t("export_csv"))
+        if not path:
+            return
+        try:
+            self.history.export_csv(path)
+            self.status_var.set(self.tr.t("export_done", path=path))
+        except Exception as e:
+            self.status_var.set(self.tr.t("log_unexpected_error", e=e))
+
+    def load_token(self, token):
+        """Подставить адрес и сразу запустить разбор — из списка пар, истории и т.п."""
+        if self.worker:
+            self.stop()
+        self._hide_ca_placeholder()
+        self.ca_entry.configure(state="normal")
+        self.ca_entry.delete(0, "end")
+        self.ca_entry.insert(0, token)
+        self.select_left_tab("tab_token")
+        self.start()
 
     def select_left_tab(self, key):
         if self._active_left_tab == key:
@@ -2941,6 +3479,8 @@ class App:
         for key, btn in self.left_tabs.items():
             btn.configure(text=t(key))
         self.migrated_lbl.configure(text=t("migrated_todo"))
+        self.export_btn.configure(text=t("export_csv"))
+        self.refresh_history_tab()
         self.pairs_hint.configure(text=t("pairs_hint", n=len(self._pairs_rows)))
         self.pairs_tree.heading("token", text=t("col_pair_token"), anchor="w")
         self.pairs_tree.heading("age", text=t("col_pair_age"), anchor="e")
@@ -3331,7 +3871,8 @@ class App:
 
         self.clear()
         for field, (key, cap, val) in self.token_rows.items():
-            val.configure(text="—")
+            val.configure(text="—", fg=TEXT)
+        self._dev_address = None
         self.token_name_lbl.configure(text="—")
         self.token_symbol_lbl.configure(text="")
         self.token_icon.configure(text="?")
@@ -3653,14 +4194,7 @@ class App:
         pair = self._pairs_rows.get(self.pairs_tree.identify_row(event.y))
         if not pair:
             return
-        if self.worker:
-            self.stop()
-        self._hide_ca_placeholder()
-        self.ca_entry.configure(state="normal")
-        self.ca_entry.delete(0, "end")
-        self.ca_entry.insert(0, pair["token"])
-        self.select_left_tab("tab_token")   # дальше человек смотрит на разбор токена
-        self.start()
+        self.load_token(pair["token"])
 
     def _redraw_risk_bar(self):
         width = self.risk_bar.winfo_width()
@@ -3671,6 +4205,65 @@ class App:
             return
         self.risk_bar.coords(self._risk_bar_rect, 0, 0, width * self._risk_score / 100, 6)
         self.risk_bar.itemconfigure(self._risk_bar_rect, fill=getattr(self, "_risk_color", MUTED))
+
+    def _apply_contract_info(self, data):
+        t = self.tr.t
+        hook = data.get("hook")
+        if hook:
+            if not hook.get("has_hook"):
+                text, color = t("hook_none"), GREEN
+            elif hook.get("can_block_swaps"):
+                text, color = t("hook_blocks"), RED
+            elif hook.get("can_take_cut"):
+                text, color = t("hook_cut"), GOLD
+            else:
+                text, color = t("hook_watch"), TEXT
+            self.token_rows["hook"][2].configure(text=text, fg=color)
+            if hook.get("dynamic_fee"):
+                self.token_rows["fee"][2].configure(text=t("fee_dynamic"), fg=GOLD)
+            elif hook.get("fee_pct") is not None:
+                self.token_rows["fee"][2].configure(text=f"{hook['fee_pct']:.2f}%", fg=TEXT)
+        dev = data.get("dev")
+        if dev:
+            self._dev_address = dev.get("address")
+            if dev_linked_to_bundle(data):
+                self.token_rows["dev"][2].configure(text=t("dev_in_bundle"), fg=RED)
+            elif dev.get("held_pct") is not None:
+                held = dev["held_pct"]
+                self.token_rows["dev"][2].configure(text=f"{held:.1f}%",
+                                                    fg=RED if held >= 10 else (GOLD if held >= 5 else TEXT))
+        holders = data.get("holders")
+        if holders and holders.get("n"):
+            top = holders["top_pct"]
+            self.token_rows["top10"][2].configure(text=f"{top:.0f}%",
+                                                  fg=RED if top >= 60 else (GOLD if top >= 40 else TEXT))
+
+    def _remember_result(self, data):
+        """Память о бандлерах и история — только по окончательному результату."""
+        token = data.get("token")
+        if not token or data.get("funders_pending"):
+            return
+        symbol = self.token_symbol_lbl.cget("text") or self.token_name_lbl.cget("text")
+        candidates = set(data.get("bundle_clusters") or {})
+        for hops in (data.get("masters") or {}).values():
+            candidates.update(h for h in (hops.get("hop1"), hops.get("hop2")) if h)
+        data["known_masters"] = self.bundlers.lookup(candidates, token)
+        if data["known_masters"]:
+            other = sorted({f"{v['symbol'] or k[:8]}" for tokens in data["known_masters"].values()
+                            for k, v in tokens.items()})
+            self.append_log(self.tr.t("log_serial_bundler", tokens=", ".join(other[:6])), "error")
+        self.bundlers.record(token, symbol, data.get("bundle_clusters"))
+        risk = assess_token_risk(data, self._bundle_held)
+        self.history.add({
+            "time": time.strftime("%Y-%m-%d %H:%M"), "token": token, "symbol": symbol,
+            "chain": data.get("chain_id") or "", "score": risk["score"], "level": risk["level"],
+            "bundle_pct": round(data.get("bundle_pct") or 0, 2),
+            "early_pct": round(data.get("early_pct") or 0, 2),
+            "groups": len(data.get("bundle_clusters") or {}),
+            "wallets": data.get("early_wallets") or 0,
+            "serial_bundler": bool(data["known_masters"]),
+        })
+        self.refresh_history_tab()
 
     def show_bundle_result(self, data, keep_holdings=False):
         """keep_holdings=True — это второй, догоняющий результат с раздатчиками:
@@ -3713,6 +4306,8 @@ class App:
                               RED if clusters else ACCENT)
 
         self._bundle_last_result = data
+        self._apply_contract_info(data)
+        self._remember_result(data)
         self._render_bundle_rows(data)
         if keep_holdings and self._bundle_held:
             # связи дочитались — "ещё держат" теперь считается по кошелькам бандла,
