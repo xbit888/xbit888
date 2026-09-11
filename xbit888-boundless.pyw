@@ -329,6 +329,9 @@ TR = {
         "ru": "Не удалось прочитать общее предложение токена — проценты считать не из чего. Нажмите Старт ещё раз через несколько секунд.",
         "en": "Could not read the token's total supply, so no percentage can be computed. Press Start again in a few seconds.",
         "zh": "未能读取代币总供应量，无法计算占比。请几秒后再次点击开始。"},
+    "bundle_pool_untraded": {"ru": "Пул создан, но в нём ещё не было ни одной сделки.",
+                              "en": "The pool exists, but nobody has traded in it yet.",
+                              "zh": "资金池已创建，但尚无任何交易。"},
     "bundle_no_early_buys": {"ru": "В окне запуска не найдено ни одной покупки.",
                               "en": "No buys found in the launch window.",
                               "zh": "在上线窗口内未发现任何买入。"},
@@ -2205,7 +2208,21 @@ def check_evm_bundles(ca, chain_id, info, rpc_url, window_seconds, emit, tr, sto
         emit("bundle_result", {"error": tr.t("bundle_no_supply")})
         return
 
-    first_block = init["block"]
+    try:
+        latest_block = int(evm_rpc_call(rpc_url, "eth_blockNumber", []), 16)
+    except Exception:
+        latest_block = init["block"] + 2_000_000
+    first_block = evm_first_swap_block(rpc_url, pool_manager, pool_id, init["block"], latest_block)
+    if first_block is None and chain_id in KNOWN_POOL_MANAGERS:
+        # подсказанный пул пустой (так бывает и с парой из Dexscreener) — ищем торговый
+        other = discover_v4_pool_by_initialize(rpc_url, KNOWN_POOL_MANAGERS[chain_id], ca)
+        if other and other["pool_id"] != pool_id:
+            pool_manager, pool_id = other["pool_manager"], other["pool_id"]
+            init = evm_find_pool_initialize(rpc_url, pool_manager, pool_id) or init
+            first_block = evm_first_swap_block(rpc_url, pool_manager, pool_id, init["block"], latest_block)
+    if first_block is None:
+        emit("bundle_result", {"error": tr.t("bundle_pool_untraded")})
+        return
     # порядок токенов тоже берём из Initialize: угадывание по адресам иногда
     # переворачивалось, и тогда все покупки читались как продажи
     is_token0 = init["currency0"].lower() == ca.lower()
@@ -2251,8 +2268,10 @@ def check_evm_bundles(ca, chain_id, info, rpc_url, window_seconds, emit, tr, sto
     if buys_by_tx:
         tx_hashes = list(buys_by_tx.keys())
         with concurrent.futures.ThreadPoolExecutor(max_workers=12) as pool:
+            # с повтором: сбой RPC здесь молча выкидывал покупку, и число ранних
+            # кошельков на одном токене плавало от запуска к запуску (90 → 97)
             future_map = {
-                pool.submit(evm_rpc_call, rpc_url, "eth_getTransactionByHash", [h]): h
+                pool.submit(rpc_call_retry, evm_rpc_call, rpc_url, "eth_getTransactionByHash", [h]): h
                 for h in tx_hashes
             }
             for fut in concurrent.futures.as_completed(future_map):
@@ -2273,7 +2292,7 @@ def check_evm_bundles(ca, chain_id, info, rpc_url, window_seconds, emit, tr, sto
     hook = describe_v4_hook(init.get("hooks", "0x" + "0" * 40), init.get("fee", 0))
     extras = {
         "hook": hook,
-        "signals": compute_launch_signals(buys, first_block),
+        "signals": compute_launch_signals(buys, init["block"]),
         "token": ca, "chain_id": chain_id,
     }
 
@@ -2624,12 +2643,56 @@ def discover_v4_pool_by_initialize(rpc_url, pool_manager, token_address):
             except Exception:
                 pass
         if found:
-            # у токена может быть несколько пулов; для анализа запуска нужен первый
-            log = min(found, key=lambda l: int(l["blockNumber"], 16))
+            log = pick_traded_pool(rpc_url, pool_manager, found, latest)
             c0 = evm_topic_to_address(log["topics"][2])
             c1 = evm_topic_to_address(log["topics"][3])
             return {"pool_manager": pool_manager, "pool_id": log["topics"][1],
                     "quote_token": c1 if c0.lower() == token_address.lower() else c0}
+    return None
+
+
+def pick_traded_pool(rpc_url, pool_manager, init_logs, latest, window_blocks=600):
+    """Из нескольких пулов токена выбирает тот, где реально торговали.
+
+    Лаунчпады нередко создают пару с другой квотой, которая так и остаётся
+    пустой. Прежде брался самый ранний пул — и на таком токене анализ упирался
+    в пустоту: "истории сделок не найдено", хотя рядом шли тысячи сделок."""
+    if len(init_logs) == 1:
+        return init_logs[0]
+
+    def early_swaps(log, span):
+        start = int(log["blockNumber"], 16)
+        try:
+            return len(_logs_range(rpc_url, {"address": pool_manager,
+                                             "topics": [UNISWAP_V4_SWAP_TOPIC, log["topics"][1]]},
+                                   start, min(latest, start + span)))
+        except Exception:
+            return 0
+
+    ranked = sorted(init_logs, key=lambda l: int(l["blockNumber"], 16))
+    counts = [early_swaps(log, window_blocks) for log in ranked]
+    if max(counts) == 0:
+        # в первую минуту не торговали нигде — смотрим шире, где торговля вообще была
+        counts = [early_swaps(log, 200_000) for log in ranked]
+    best = max(range(len(ranked)), key=lambda i: (counts[i], -i))
+    return ranked[best]
+
+
+def evm_first_swap_block(rpc_url, pool_manager, pool_id, from_block, latest, max_span=2_000_000):
+    """Блок первой сделки в пуле. Пул иногда создают заранее, а торговлю открывают
+    позже, и окно "первых 60 секунд" должно начинаться с первой сделки."""
+    step, cur = 600, from_block
+    while cur <= min(latest, from_block + max_span):
+        end = min(latest, cur + step - 1)
+        try:
+            logs = _logs_range(rpc_url, {"address": pool_manager,
+                                         "topics": [UNISWAP_V4_SWAP_TOPIC, pool_id]}, cur, end)
+        except Exception:
+            logs = []
+        if logs:
+            return min(int(l["blockNumber"], 16) for l in logs)
+        cur = end + 1
+        step = min(step * 4, 200_000)   # чем дальше от создания, тем крупнее шаг
     return None
 
 
