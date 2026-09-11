@@ -372,19 +372,24 @@ TR = {
     "export_csv": {"ru": "Экспорт в CSV", "en": "Export CSV", "zh": "导出 CSV"},
     "export_done": {"ru": "Сохранено: {path}", "en": "Saved: {path}", "zh": "已保存：{path}"},
     "tab_migrated": {"ru": "MIGRATED", "en": "MIGRATED", "zh": "已迁移"},
-    "pairs_hint": {"ru": "{n} пулов создано недавно · двойной клик — разобрать токен",
-                    "en": "{n} pools created recently · double-click to analyse",
-                    "zh": "最近创建了 {n} 个资金池 · 双击进行分析"},
+    "pairs_hint": {"ru": "{n} свежих пулов · ~ — быстрая оценка без раздатчиков, двойной клик — полная",
+                    "en": "{n} fresh pools · ~ is a quick score without funders; double-click for the full check",
+                    "zh": "{n} 个新资金池 · ~ 为不含资金来源的快速评分，双击进行完整检查"},
     "col_pair_token": {"ru": "Токен", "en": "Token", "zh": "代币"},
+    "age_s": {"ru": "{n}с", "en": "{n}s", "zh": "{n}秒"},
+    "age_m": {"ru": "{n}м", "en": "{n}m", "zh": "{n}分"},
+    "age_h": {"ru": "{n:.1f}ч", "en": "{n:.1f}h", "zh": "{n:.1f}时"},
+    "col_pair_score": {"ru": "Оценка", "en": "Score", "zh": "评分"},
     "col_pair_age": {"ru": "Возраст", "en": "Age", "zh": "存续"},
     "pairs_loading": {"ru": "читаю новые пулы...", "en": "loading new pools...", "zh": "正在读取新资金池..."},
     "pairs_empty": {"ru": "новых пулов пока нет", "en": "no new pools yet", "zh": "暂无新资金池"},
     "pairs_failed": {"ru": "RPC не ответил, пробую снова", "en": "RPC did not answer, retrying",
                       "zh": "RPC 无响应，正在重试"},
-    "migrated_todo": {
-        "ru": "На Robinhood Chain отдельного шага миграции нет: пул Uniswap V4 создаётся сразу, и все такие пулы уже показаны во вкладке НОВЫЕ.\n\nНапишите, что здесь показывать — например токены, перешагнувшие определённый MCAP или объём, — и я заполню.",
-        "en": "There is no separate migration step on Robinhood Chain: the Uniswap V4 pool is created straight away, and every such pool already appears under NEW PAIRS.\n\nTell me what this tab should list — tokens past a given MCAP or volume, for example — and I will fill it in.",
-        "zh": "Robinhood Chain 上没有单独的迁移环节：Uniswap V4 资金池会直接创建，这些资金池都已显示在“新交易对”中。\n\n请告诉我这个标签页应该显示什么，例如超过某个市值或成交量的代币。"},
+    "migrated_hint": {"ru": "Токены младше 12 ч с MCAP от $10K, ликвидностью от $3K и сделками за последние 5 мин. Пустые пулы с нарисованной ценой отсеяны.",
+                       "en": "Tokens under 12 h with $10K+ MCAP, $3K+ liquidity and trades in the last 5 min. Empty pools with painted prices are filtered out.",
+                       "zh": "12 小时内、市值 $10K 以上、流动性 $3K 以上且最近 5 分钟有交易的代币。已过滤价格虚高的空资金池。"},
+    "migrated_empty": {"ru": "пока ни один свежий токен не перешагнул порог", "en": "no fresh token past the threshold yet",
+                        "zh": "暂无新代币超过门槛"},
     "card_token_info": {"ru": "ТОКЕН", "en": "TOKEN INFO", "zh": "代币信息"},
     "card_live_feed": {"ru": "ЛЕНТА СДЕЛОК", "en": "LIVE FEED", "zh": "实时交易"},
     "card_live_stats": {"ru": "СТАТИСТИКА", "en": "LIVE STATS", "zh": "实时统计"},
@@ -1084,6 +1089,23 @@ def bgra_to_clipboard(img):
         user32.EmptyClipboard()
         user32.SetClipboardData(8, handle)                    # CF_DIB
         user32.CloseClipboard()
+
+
+def format_age(seconds, tr):
+    if seconds < 60:
+        return tr.t("age_s", n=int(seconds))
+    if seconds < 3600:
+        return tr.t("age_m", n=int(seconds // 60))
+    return tr.t("age_h", n=seconds / 3600)
+
+
+def safe_text(value):
+    """Tcl в сборках Python для Windows ломается на символах вне базовой плоскости
+    Юникода (многие эмодзи). Названия токенов бывают любыми, поэтому такие символы
+    заменяем перед выводом, а не падаем на чтении таблицы."""
+    if not value:
+        return value
+    return "".join(ch if ord(ch) <= 0xFFFF else "□" for ch in str(value))
 
 
 def app_data_dir():
@@ -1851,15 +1873,244 @@ def fetch_new_pairs(rpc_url, pool_manager, lookback_blocks=20000, limit=40, bloc
         if len(candidates) != 1:
             continue  # пара из двух квот либо два неизвестных токена — пропускаем
         block = int(lg["blockNumber"], 16)
+        words = [lg["data"][2 + i:2 + i + 64] for i in range(0, len(lg["data"]) - 2, 64)]
         pairs.append({
             "token": candidates[0],
             "pool_id": lg["topics"][1],
             "block": block,
             "age_seconds": max(0, (latest - block) * block_time),
+            "token_is_currency0": candidates[0].lower() == c0.lower(),
+            "fee": int(words[0], 16) if words else 0,
+            "hooks": "0x" + words[2][24:] if len(words) > 2 else NATIVE_ADDRESS,
         })
         if len(pairs) >= limit:
             break
     return pairs
+
+
+NATIVE_ADDRESS = "0x0000000000000000000000000000000000000000"
+# стейблкоин сети — в нём цена сразу в долларах
+STABLE_QUOTES = {"robinhood": "0x5fc5360d0400a0fd4f2af552add042d716f1d168"}
+
+
+def _logs_range(rpc_url, params, from_block, to_block, depth=0):
+    """Один диапазон; если узел отказал (лимит ~10k записей, таймаут) — делим
+    пополам. Молча вернуть пустоту здесь нельзя: это выглядело бы как "свопов нет"."""
+    try:
+        return rpc_call_retry(lambda: evm_rpc_call(rpc_url, "eth_getLogs", [
+            dict(params, fromBlock=hex(from_block), toBlock=hex(to_block))]) or [], tries=2, delay=0.5)
+    except Exception:
+        if to_block - from_block < 50 or depth > 6:
+            raise
+        mid = (from_block + to_block) // 2
+        return (_logs_range(rpc_url, params, from_block, mid, depth + 1) +
+                _logs_range(rpc_url, params, mid + 1, to_block, depth + 1))
+
+
+def _logs_chunked(rpc_url, params, from_block, to_block, chunk):
+    out, cur = [], from_block
+    while cur <= to_block:
+        end = min(to_block, cur + chunk - 1)
+        out += _logs_range(rpc_url, params, cur, end)
+        cur = end + 1
+    return out
+
+
+def v4_price_in_quote(sqrt_price_x96, token_is_currency0, token_decimals, quote_decimals):
+    """Цена токена в единицах второй валюты пула из sqrtPriceX96."""
+    raw = (sqrt_price_x96 / 2 ** 96) ** 2          # currency1 за currency0, в "сырых" единицах
+    if raw <= 0:
+        return 0.0
+    if token_is_currency0:
+        return raw * 10 ** (token_decimals - quote_decimals)
+    return 1 / (raw * 10 ** (quote_decimals - token_decimals))
+
+
+class MarketCache:
+    """Кэш того, что не меняется: decimals и supply токенов, пары пулов."""
+
+    def __init__(self):
+        self.decimals, self.supply, self.pools = {}, {}, {}
+        self.lock = threading.Lock()
+        self.native_stable_pools = None     # список пулов натив/стейбл — меняется редко
+        self.inits = []                     # события создания пулов за окно
+        self.inits_to = None                # до какого блока уже прочитаны
+
+    def token_info(self, rpc_url, token):
+        key = token.lower()
+        if key not in self.decimals:
+            dec = rpc_call_retry(evm_get_decimals, rpc_url, token)
+            sup = rpc_call_retry(evm_get_total_supply, rpc_url, token) / (10 ** dec)
+            with self.lock:
+                self.decimals[key], self.supply[key] = dec, sup
+        return self.decimals[key], self.supply[key]
+
+
+def fetch_recent_swaps(rpc_url, pool_manager, blocks=6000):
+    """Все свопы сети за последние ~10 минут одним проходом: по ним видно, какие
+    пулы живые, и у каждого — последняя цена."""
+    latest = int(evm_rpc_call(rpc_url, "eth_blockNumber", []), 16)
+    logs = _logs_chunked(rpc_url, {"address": pool_manager, "topics": [UNISWAP_V4_SWAP_TOPIC]},
+                         max(0, latest - blocks), latest, 800)
+    pools = {}
+    for lg in logs:
+        pid = lg["topics"][1]
+        pos = (int(lg["blockNumber"], 16), int(lg.get("logIndex") or "0x0", 16))
+        entry = pools.setdefault(pid, {"count": 0, "pos": (-1, -1), "sqrtp": 0, "liquidity": 0,
+                                       "vol0": 0, "vol1": 0})
+        entry["count"] += 1
+        entry["vol0"] += abs(evm_word_signed(lg["data"], 0))
+        entry["vol1"] += abs(evm_word_signed(lg["data"], 1))
+        if pos > entry["pos"]:
+            entry["pos"] = pos
+            entry["sqrtp"] = int(lg["data"][2 + 128:2 + 192], 16)
+            entry["liquidity"] = int(lg["data"][2 + 192:2 + 256], 16)
+    return latest, pools
+
+
+def v4_quote_side(pool, quote_is_currency0):
+    """Виртуальный запас квоты в активном диапазоне (в "сырых" единицах) и оборот
+    квоты за окно. Этого хватает, чтобы отличить живой пул от пустышки, где цена
+    может быть какой угодно и "капитализация" в сотни миллионов ничего не значит."""
+    sqrt_p = pool["sqrtp"] / 2 ** 96
+    if sqrt_p <= 0:
+        return 0, 0
+    reserve = pool["liquidity"] / sqrt_p if quote_is_currency0 else pool["liquidity"] * sqrt_p
+    return reserve, (pool["vol0"] if quote_is_currency0 else pool["vol1"])
+
+
+def native_usd_price(rpc_url, pool_manager, chain_id, active_pools, cache=None):
+    """Цена нативной монеты в долларах — из самого активного пула натив/стейблкоин.
+    Самый активный, потому что таких пулов сотни и в пустом цена может быть любой."""
+    stable = STABLE_QUOTES.get(chain_id)
+    if not stable:
+        return None
+    if cache is None or cache.native_stable_pools is None:
+        logs = evm_get_logs_retry(rpc_url, {"address": pool_manager, "topics": [
+            UNISWAP_V4_INITIALIZE_TOPIC, None, evm_pad_address_topic(NATIVE_ADDRESS),
+            evm_pad_address_topic(stable)], "fromBlock": "0x0", "toBlock": "latest"})
+        ids = [lg["topics"][1] for lg in logs]
+        if cache is not None:
+            cache.native_stable_pools = ids
+    else:
+        ids = cache.native_stable_pools
+    candidates = [pid for pid in ids if pid in active_pools]
+    if not candidates:
+        return None
+    best = max(candidates, key=lambda pid: active_pools[pid]["count"])
+    stable_dec = evm_get_decimals(rpc_url, stable)
+    # натив — всегда currency0 (нулевой адрес меньше любого)
+    return v4_price_in_quote(active_pools[best]["sqrtp"], True, 18, stable_dec)
+
+
+def fetch_migrated(rpc_url, pool_manager, chain_id, cache, min_mcap=10_000, hours=12,
+                   block_time=0.1, limit=25, min_liquidity=3_000, min_swaps=3, max_ratio=100):
+    """"Мигрировавшие": токены младше N часов, чья капитализация уже перевалила порог.
+    На Robinhood нет отдельного шага миграции, поэтому вкладка показывает то, ради
+    чего её обычно смотрят, — какие из свежих запусков набрали вес."""
+    latest, active = fetch_recent_swaps(rpc_url, pool_manager, blocks=3000)
+    eth_usd = native_usd_price(rpc_url, pool_manager, chain_id, active, cache)
+    stable = (STABLE_QUOTES.get(chain_id) or "").lower()
+
+    span = int(hours * 3600 / block_time)
+    floor = max(0, latest - span)
+    # дочитываем только новые блоки: полный проход по 12 часам занимал десятки секунд
+    start = floor if cache.inits_to is None else max(floor, cache.inits_to + 1)
+    fresh = _logs_chunked(rpc_url, {"address": pool_manager, "topics": [UNISWAP_V4_INITIALIZE_TOPIC]},
+                          start, latest, 36000)
+    cache.inits = [lg for lg in cache.inits if int(lg["blockNumber"], 16) >= floor] + fresh
+    cache.inits_to = latest
+    inits = cache.inits
+    quotes = {NATIVE_ADDRESS, stable}
+    rows = []
+    jobs = []
+    for lg in inits:
+        pid = lg["topics"][1]
+        if pid not in active:
+            continue                      # за последние минуты пул никто не торговал
+        c0 = evm_topic_to_address(lg["topics"][2]).lower()
+        c1 = evm_topic_to_address(lg["topics"][3]).lower()
+        if (c0 in quotes) == (c1 in quotes):
+            continue                      # две квоты или ни одной — не запуск токена
+        token, quote = (c1, c0) if c0 in quotes else (c0, c1)
+        jobs.append((pid, token, quote, token == c0, int(lg["blockNumber"], 16)))
+
+    def quote_usd(quote, raw):
+        if quote == NATIVE_ADDRESS:
+            return raw / 1e18 * eth_usd if eth_usd else None
+        return raw / (10 ** cache.token_info(rpc_url, quote)[0])   # стейблкоин = доллары
+
+    # сначала отсев по живости пула — он стоит ноль запросов на токен
+    alive = []
+    for pid, token, quote, is0, block in jobs:
+        pool = active[pid]
+        if pool["count"] < min_swaps:
+            continue
+        reserve_raw, volume_raw = v4_quote_side(pool, quote_is_currency0=not is0)
+        liquidity = _safe(quote_usd, quote, reserve_raw)
+        if liquidity is None or liquidity * 2 < min_liquidity:
+            continue
+        alive.append((pid, token, quote, is0, block, liquidity * 2, _safe(quote_usd, quote, volume_raw) or 0.0))
+
+    def price(job):
+        pid, token, quote, is0, block, liquidity, volume = job
+        dec, supply = cache.token_info(rpc_url, token)
+        qdec = 18 if quote == NATIVE_ADDRESS else cache.token_info(rpc_url, quote)[0]
+        p = v4_price_in_quote(active[pid]["sqrtp"], is0, dec, qdec)
+        usd = p * eth_usd if quote == NATIVE_ADDRESS else p
+        return {"token": token, "pool_id": pid, "mcap": usd * supply, "liquidity": liquidity,
+                "volume": volume, "age_seconds": (latest - block) * block_time,
+                "swaps": active[pid]["count"]}
+
+    if eth_usd is None:
+        alive = [job for job in alive if job[2] != NATIVE_ADDRESS]
+    with concurrent.futures.ThreadPoolExecutor(max_workers=8) as pool:
+        for result in pool.map(lambda j: _safe(price, j), alive):
+            # капитализация в сотни раз больше ликвидности — нарисованная цена в тонком
+            # пуле, а не рынок; у живых запусков это соотношение редко выше сотни
+            if result and result["mcap"] >= min_mcap and result["mcap"] <= result["liquidity"] * max_ratio:
+                rows.append(result)
+    best = {}
+    for row in rows:   # один токен бывает в нескольких пулах — берём самый ликвидный
+        key = row["token"].lower()
+        if key not in best or row["liquidity"] > best[key]["liquidity"]:
+            best[key] = row
+    rows = sorted(best.values(), key=lambda r: r["mcap"], reverse=True)
+    return {"rows": rows[:limit], "eth_usd": eth_usd, "min_mcap": min_mcap, "hours": hours,
+            "min_liquidity": min_liquidity}
+
+
+def _safe(fn, *args):
+    try:
+        return fn(*args)
+    except Exception:
+        return None
+
+
+def quick_pair_check(rpc_url, pool_manager, pair, cache, window_blocks=600):
+    """Предварительная оценка без поиска раздатчиков: ранние покупки и хук.
+
+    Стоит два-три запроса на пул вместо сотен, поэтому её можно считать для
+    всего списка новых пар. Раздатчиков она не видит — полная проверка по клику."""
+    decimals, supply = cache.token_info(rpc_url, pair["token"])
+    logs = evm_get_logs_retry(rpc_url, {
+        "address": pool_manager, "topics": [UNISWAP_V4_SWAP_TOPIC, pair["pool_id"]],
+        "fromBlock": hex(pair["block"]), "toBlock": hex(pair["block"] + window_blocks)})
+    bought, launch_block_txs = 0.0, set()
+    for lg in logs:
+        amount = evm_word_signed(lg["data"], 0 if pair["token_is_currency0"] else 1)
+        if amount > 0:
+            bought += amount / (10 ** decimals)
+            if int(lg["blockNumber"], 16) == pair["block"]:
+                launch_block_txs.add(lg["transactionHash"])
+    data = {
+        "early_pct": (bought / supply * 100) if supply else 0.0,
+        "bundle_pct": 0.0, "bundle_clusters": {}, "wallet_rows": [],
+        "hook": describe_v4_hook(pair["hooks"], pair["fee"]),
+        "signals": {"total": 0, "same_block": len(launch_block_txs), "fresh": 0, "similar_spend": 0},
+    }
+    risk = assess_token_risk(data)
+    return {"score": risk["score"], "level": risk["level"], "early_pct": data["early_pct"]}
 
 
 def fetch_all_pool_swaps(rpc_url, pool_manager, pool_id, lookback_blocks=1_500_000, stop_event=None):
@@ -2893,6 +3144,8 @@ class App:
         self._dev_address = None
         self.bundlers = BundlerMemory()
         self.settings = LocalStore("settings.json", {"alerts": True})
+        self.market = MarketCache()
+        self._pair_quick = {}
         self._dump_basis = None
         self.history = CheckHistory()
         self.worker = None
@@ -3258,12 +3511,13 @@ class App:
 
         table = tk.Frame(pane, bg=PANEL)
         table.pack(fill="both", expand=True)
-        self.pairs_tree = ttk.Treeview(table, columns=("token", "age"), show="headings",
+        self.pairs_tree = ttk.Treeview(table, columns=("token", "score", "age"), show="headings",
                                         style="Treeview", height=9)
-        self.pairs_tree.column("token", width=140, anchor="w", stretch=True)
-        self.pairs_tree.column("age", width=70, anchor="e", stretch=False)
-        self.pairs_tree.heading("token", text="", anchor="w")
-        self.pairs_tree.heading("age", text="", anchor="e")
+        self.pairs_tree.column("token", width=100, anchor="w", stretch=True)
+        self.pairs_tree.column("score", width=50, anchor="e", stretch=False)
+        self.pairs_tree.column("age", width=52, anchor="e", stretch=False)
+        for level, color in (("high", RED), ("caution", GOLD), ("low", GREEN)):
+            self.pairs_tree.tag_configure("q_" + level, foreground=color)
         self.pairs_tree.tag_configure("fresh", foreground=ACCENT)
         self.pairs_tree.tag_configure("older", foreground=TEXT)
         self.pairs_tree.tag_configure("placeholder", foreground=MUTED)
@@ -3295,10 +3549,88 @@ class App:
         self.export_btn.pack(fill="x", pady=(8, 0))
         self._history_rows = {}
 
-        self.migrated_lbl = tk.Label(self.left_panes["tab_migrated"], bg=PANEL, fg=MUTED,
-                                      font=(MONO, 8), anchor="nw", justify="left",
-                                      wraplength=230)
-        self.migrated_lbl.pack(fill="both", expand=True)
+        mig = self.left_panes["tab_migrated"]
+        self.migrated_lbl = tk.Label(mig, bg=PANEL, fg=MUTED, font=(MONO, 7), anchor="w",
+                                      justify="left", wraplength=230)
+        self.migrated_lbl.pack(fill="x", pady=(0, 6))
+        mig_table = tk.Frame(mig, bg=PANEL)
+        mig_table.pack(fill="both", expand=True)
+        self.migrated_tree = ttk.Treeview(mig_table, columns=("token", "mcap", "age"), show="headings",
+                                           style="Treeview", height=9)
+        self.migrated_tree.column("token", width=90, anchor="w", stretch=True)
+        self.migrated_tree.column("mcap", width=66, anchor="e", stretch=False)
+        self.migrated_tree.column("age", width=46, anchor="e", stretch=False)
+        self.migrated_tree.tag_configure("row", foreground=ACCENT)
+        self.migrated_tree.tag_configure("placeholder", foreground=MUTED)
+        self.migrated_tree.bind("<Double-Button-1>", self.on_migrated_double_click)
+        mvsb = ttk.Scrollbar(mig_table, orient="vertical", command=self.migrated_tree.yview)
+        self.migrated_tree.configure(yscrollcommand=mvsb.set)
+        self.migrated_tree.pack(side="left", fill="both", expand=True)
+        mvsb.pack(side="right", fill="y")
+        self._migrated_rows = {}
+
+    # -- MIGRATED --------------------------------------------------------
+    def refresh_migrated(self, force=False):
+        now = time.time()
+        if getattr(self, "_migrated_busy", False):
+            return
+        if not force and now - getattr(self, "_migrated_at", 0) < 60:
+            return
+        self._migrated_busy, self._migrated_at = True, now
+        if not self._migrated_rows:
+            self._migrated_placeholder("pairs_loading")
+
+        def worker():
+            try:
+                rpc_url = RPC_OVERRIDE or DEFAULT_EVM_RPCS["robinhood"]
+                result = fetch_migrated(rpc_url, KNOWN_POOL_MANAGERS["robinhood"], "robinhood", self.market)
+                with concurrent.futures.ThreadPoolExecutor(max_workers=6) as pool:
+                    names = list(pool.map(lambda r: _safe(evm_get_token_identity, rpc_url, r["token"]),
+                                          result["rows"]))
+                for row, ident in zip(result["rows"], names):
+                    row["symbol"] = safe_text((ident or (None, None))[1])
+                self.emit("migrated", result)
+            except Exception as e:
+                self.emit("migrated", {"error": str(e)})
+
+        threading.Thread(target=worker, daemon=True).start()
+
+    def _migrated_placeholder(self, key):
+        for row_id in self.migrated_tree.get_children():
+            self.migrated_tree.delete(row_id)
+        self._migrated_rows.clear()
+        self.migrated_tree.insert("", "end", values=(self.tr.t(key), "", ""), tags=("placeholder",))
+
+    def show_migrated(self, data):
+        self._migrated_busy = False
+        if data.get("error"):
+            self._migrated_placeholder("pairs_failed")
+            return
+        rows = data.get("rows") or []
+        self._migrated_last = data
+        if not rows:
+            self._migrated_placeholder("migrated_empty")
+            return
+        for row_id in self.migrated_tree.get_children():
+            self.migrated_tree.delete(row_id)
+        self._migrated_rows.clear()
+        # копии с одинаковым названием — обычное дело; хвост адреса их различает
+        counts = {}
+        for row in rows:
+            counts[row.get("symbol")] = counts.get(row.get("symbol"), 0) + 1
+        for row in rows:
+            if row.get("symbol") and counts[row["symbol"]] > 1:
+                row["symbol"] = f"{row['symbol'][:8]}·{row['token'][-4:]}"
+        for row in rows:
+            age_text = format_age(row["age_seconds"], self.tr)
+            row_id = self.migrated_tree.insert("", "end", tags=("row",), values=(
+                row.get("symbol") or f"{row['token'][:8]}…", f"${human_number(row['mcap'])}", age_text))
+            self._migrated_rows[row_id] = row
+
+    def on_migrated_double_click(self, event):
+        row = self._migrated_rows.get(self.migrated_tree.identify_row(event.y))
+        if row:
+            self.load_token(row["token"])
 
     def refresh_history_tab(self):
         if not hasattr(self, "history_tree"):
@@ -3307,11 +3639,15 @@ class App:
             self.history_tree.delete(row_id)
         self._history_rows.clear()
         for row in self.history.data[:200]:
-            label = row.get("symbol") or f"{row['token'][:8]}…"
+            label = safe_text(row.get("symbol")) if row.get("symbol") not in (None, "", "—") else None
+            label = label or f"{row['token'][:8]}…"
             if row.get("serial_bundler"):
                 label = "↺ " + label   # мастер этого бандла встречался раньше
+            stamp = row.get("time") or ""
+            # сегодня — часы, раньше — дата: полная метка не влезала в колонку
+            when = stamp[11:] if stamp[:10] == time.strftime("%Y-%m-%d") else stamp[5:10]
             row_id = self.history_tree.insert(
-                "", "end", values=(label, f"{row.get('score', '—')}%", (row.get("time") or "")[5:]),
+                "", "end", values=(label, f"{row.get('score', '—')}%", when),
                 tags=(row.get("level") or "",))
             self._history_rows[row_id] = row
 
@@ -3357,6 +3693,8 @@ class App:
                            bg=ACCENT if active else PANEL)
         if key == "tab_new_pairs":
             self.refresh_new_pairs()
+        elif key == "tab_migrated":
+            self.refresh_migrated()
 
     def _build_bundle_card(self, parent):
         """Главная панель приложения — результат анализа бандлов."""
@@ -3616,7 +3954,10 @@ class App:
         self.token_card_title.configure(text=t("card_token_info"))
         for key, btn in self.left_tabs.items():
             btn.configure(text=t(key))
-        self.migrated_lbl.configure(text=t("migrated_todo"))
+        self.migrated_lbl.configure(text=t("migrated_hint"))
+        self.migrated_tree.heading("token", text=t("col_pair_token"), anchor="w")
+        self.migrated_tree.heading("mcap", text="MCAP", anchor="e")
+        self.migrated_tree.heading("age", text=t("col_pair_age"), anchor="e")
         self.export_btn.configure(text=t("export_csv"))
         if hasattr(self, "settings"):
             self._refresh_alerts_label()
@@ -3624,6 +3965,7 @@ class App:
         self.refresh_history_tab()
         self.pairs_hint.configure(text=t("pairs_hint", n=len(self._pairs_rows)))
         self.pairs_tree.heading("token", text=t("col_pair_token"), anchor="w")
+        self.pairs_tree.heading("score", text=t("col_pair_score"), anchor="e")
         self.pairs_tree.heading("age", text=t("col_pair_age"), anchor="e")
         self.feed_card_title.configure(text=t("card_live_feed"))
         self.bundle_card_title.configure(text=t("card_bundle_analysis"))
@@ -3703,6 +4045,8 @@ class App:
                     self.update_bundle_holdings(payload)
                 elif kind == "new_pairs":
                     self.show_new_pairs(payload)
+                elif kind == "migrated":
+                    self.show_migrated(payload)
                 elif kind in ("info", "error"):
                     self.status_var.set(str(payload))
                     self.append_log(str(payload), kind)
@@ -3723,8 +4067,8 @@ class App:
         self.log_text.configure(state="disabled")
 
     def update_meta(self, data):
-        name = data.get("name") or ""
-        symbol = data.get("symbol") or ""
+        name = safe_text(data.get("name")) or ""
+        symbol = safe_text(data.get("symbol")) or ""
         self.token_name_lbl.configure(text=name or "—")
         self.token_symbol_lbl.configure(text=symbol or "")
         self.token_icon.configure(text=(symbol or name or "?")[:1].upper())
@@ -3734,8 +4078,10 @@ class App:
             "price": data.get("price") or "—",
             "liquidity": data.get("liquidity") or "—",
         }
-        for field, (key, cap, val) in self.token_rows.items():
-            val.configure(text=values.get(field, "—"))
+        # только поля, которые приходят с метаданными: хук, комиссию, разработчика
+        # и держателей заполняет анализ бандла, и затирать их прочерком нельзя
+        for field, text in values.items():
+            self.token_rows[field][2].configure(text=text)
 
         self.mcap_anchor = data.get("mcap_anchor")
         self.mcap_unit = data.get("mcap_unit") or ""
@@ -4358,6 +4704,13 @@ class App:
             try:
                 rpc_url = RPC_OVERRIDE or DEFAULT_EVM_RPCS["robinhood"]
                 pairs = fetch_new_pairs(rpc_url, KNOWN_POOL_MANAGERS["robinhood"])
+                todo = [p for p in pairs[:25] if p["token"].lower() not in self._pair_quick][:8]
+                with concurrent.futures.ThreadPoolExecutor(max_workers=4) as qpool:
+                    for pair, result in zip(todo, qpool.map(
+                            lambda p: _safe(quick_pair_check, rpc_url, KNOWN_POOL_MANAGERS["robinhood"],
+                                            p, self.market), todo)):
+                        if result:
+                            self._pair_quick[pair["token"].lower()] = result
                 # названия читаем только для показанных строк, пачкой
                 with concurrent.futures.ThreadPoolExecutor(max_workers=10) as pool:
                     future_map = {pool.submit(evm_get_token_identity, rpc_url, p["token"]): p
@@ -4378,6 +4731,8 @@ class App:
         # обновляем только когда вкладка открыта — иначе это лишняя нагрузка на RPC
         if self._active_left_tab == "tab_new_pairs":
             self.refresh_new_pairs()
+        elif self._active_left_tab == "tab_migrated":
+            self.refresh_migrated()
         self.root.after(15000, self._tick_new_pairs)
 
     def _set_pairs_placeholder(self, key):
@@ -4401,11 +4756,13 @@ class App:
         self._pairs_rows.clear()
         for pair in pairs:
             age = pair["age_seconds"]
-            age_text = f"{age:.0f}с" if age < 60 else f"{age / 60:.0f}м"
-            symbol = pair.get("symbol") or f"{pair['token'][:8]}…"
-            row_id = self.pairs_tree.insert(
-                "", "end", values=(symbol, age_text),
-                tags=("fresh" if age < 300 else "older",))
+            age_text = format_age(age, self.tr)
+            symbol = safe_text(pair.get("symbol")) or f"{pair['token'][:8]}…"
+            quick = self._pair_quick.get(pair["token"].lower())
+            # "~" — это предварительная оценка без раздатчиков, полная — по клику
+            score_text = f"~{quick['score']}" if quick else "…"
+            tag = "q_" + quick["level"] if quick else ("fresh" if age < 300 else "older")
+            row_id = self.pairs_tree.insert("", "end", values=(symbol, score_text, age_text), tags=(tag,))
             self._pairs_rows[row_id] = pair
         self.pairs_hint.configure(text=self.tr.t("pairs_hint", n=len(pairs)))
 
@@ -4462,7 +4819,8 @@ class App:
         token = data.get("token")
         if not token or data.get("funders_pending"):
             return
-        symbol = self.token_symbol_lbl.cget("text") or self.token_name_lbl.cget("text")
+        symbol = next((v for v in (self.token_symbol_lbl.cget("text"), self.token_name_lbl.cget("text"))
+                       if v and v != "—"), "")
         candidates = set(data.get("bundle_clusters") or {})
         for hops in (data.get("masters") or {}).values():
             candidates.update(h for h in (hops.get("hop1"), hops.get("hop2")) if h)
