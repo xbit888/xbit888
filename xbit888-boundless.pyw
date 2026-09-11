@@ -290,6 +290,13 @@ TR = {
     "log_serial_bundler": {"ru": "Этот бандлер уже встречался раньше — на токенах: {tokens}",
                             "en": "This bundler has been seen before, on: {tokens}",
                             "zh": "该捆绑者此前出现过，涉及代币：{tokens}"},
+    "share_btn": {"ru": "📸 ОТЧЁТ", "en": "📸 SHARE", "zh": "📸 分享"},
+    "share_nothing": {"ru": "Сначала проверьте токен — отчитываться пока не о чем",
+                       "en": "Check a token first — there is nothing to share yet",
+                       "zh": "请先检查一个代币，目前没有可分享的内容"},
+    "share_done": {"ru": "Картинка скопирована (Ctrl+V в X) и сохранена: {path}",
+                    "en": "Image copied (Ctrl+V into X) and saved: {path}",
+                    "zh": "图片已复制（可在 X 中 Ctrl+V）并保存：{path}"},
     "alerts_on": {"ru": "🔔 ОПОВЕЩЕНИЯ", "en": "🔔 ALERTS ON", "zh": "🔔 提醒开"},
     "alerts_off": {"ru": "🔕 без звука", "en": "🔕 alerts off", "zh": "🔕 提醒关"},
     "alert_dump_bundle": {"ru": "{symbol}: бандл сливает — было {before:.1f}%, стало {after:.1f}% предложения",
@@ -990,6 +997,93 @@ def send_telegram(bot_token, chat_id, text):
         urllib.request.urlopen(req, timeout=10).read()
     except Exception:
         pass
+
+
+def capture_window_bgra(root):
+    """Снимок клиентской области окна приложения (BGRA, сверху вниз) через PrintWindow."""
+    import ctypes
+    from ctypes import wintypes
+    user32, gdi32 = ctypes.windll.user32, ctypes.windll.gdi32
+
+    class BIH(ctypes.Structure):
+        _fields_ = [("biSize", wintypes.DWORD), ("biWidth", wintypes.LONG), ("biHeight", wintypes.LONG),
+                    ("biPlanes", wintypes.WORD), ("biBitCount", wintypes.WORD),
+                    ("biCompression", wintypes.DWORD), ("biSizeImage", wintypes.DWORD),
+                    ("biXPelsPerMeter", wintypes.LONG), ("biYPelsPerMeter", wintypes.LONG),
+                    ("biClrUsed", wintypes.DWORD), ("biClrImportant", wintypes.DWORD)]
+    hwnd = user32.GetParent(root.winfo_id()) or root.winfo_id()
+    rect = wintypes.RECT(); user32.GetWindowRect(hwnd, ctypes.byref(rect))
+    w, h = rect.right - rect.left, rect.bottom - rect.top
+    hdc = user32.GetWindowDC(hwnd); mdc = gdi32.CreateCompatibleDC(hdc)
+    bmp = gdi32.CreateCompatibleBitmap(hdc, w, h); gdi32.SelectObject(mdc, bmp)
+    user32.PrintWindow(hwnd, mdc, 2)
+    bih = BIH(ctypes.sizeof(BIH), w, -h, 1, 32, 0, 0, 0, 0, 0, 0)
+    buf = ctypes.create_string_buffer(w * h * 4)
+    gdi32.GetDIBits(mdc, bmp, 0, h, buf, ctypes.byref(bih), 0)
+    gdi32.DeleteObject(bmp); gdi32.DeleteDC(mdc); user32.ReleaseDC(hwnd, hdc)
+    origin = wintypes.POINT(0, 0); user32.ClientToScreen(hwnd, ctypes.byref(origin))
+    client = wintypes.RECT(); user32.GetClientRect(hwnd, ctypes.byref(client))
+    ox, oy = origin.x - rect.left, origin.y - rect.top
+    return {"buf": buf.raw, "w": w, "h": h, "ox": ox, "oy": oy,
+            "scale": client.right / max(1, root.winfo_width())}
+
+
+def crop_bgra(shot, x, y, cw, ch):
+    """Вырезает прямоугольник (в логических координатах окна) из снимка."""
+    k = shot["scale"]
+    x0 = shot["ox"] + int(x * k); y0 = shot["oy"] + int(y * k)
+    cw = int(cw * k); ch = int(ch * k)
+    cw = max(1, min(cw, shot["w"] - x0)); ch = max(1, min(ch, shot["h"] - y0))
+    row_len, stride = cw * 4, shot["w"] * 4
+    rows = [shot["buf"][(y0 + r) * stride + x0 * 4:(y0 + r) * stride + x0 * 4 + row_len] for r in range(ch)]
+    return {"rows": rows, "w": cw, "h": ch}
+
+
+def stack_bgra(parts, width, bg):
+    """Складывает куски друг под другом на фоне заданного цвета."""
+    pixel = bytes((bg[2], bg[1], bg[0], 255))
+    rows = []
+    for part in parts:
+        for row in part["rows"]:
+            rows.append(row + pixel * (width - len(row) // 4))
+    return {"rows": rows, "w": width, "h": len(rows)}
+
+
+def bgra_to_png(img, path):
+    import struct, zlib
+    raw = bytearray()
+    for row in img["rows"]:
+        rgb = bytearray(len(row) // 4 * 3)
+        rgb[0::3] = row[2::4]; rgb[1::3] = row[1::4]; rgb[2::3] = row[0::4]
+        raw += b"\x00" + rgb
+    def chunk(tag, data):
+        return (struct.pack(">I", len(data)) + tag + data +
+                struct.pack(">I", zlib.crc32(tag + data) & 0xFFFFFFFF))
+    png = (b"\x89PNG\r\n\x1a\n" + chunk(b"IHDR", struct.pack(">IIBBBBB", img["w"], img["h"], 8, 2, 0, 0, 0)) +
+           chunk(b"IDAT", zlib.compress(bytes(raw), 6)) + chunk(b"IEND", b""))
+    with open(path, "wb") as fh:
+        fh.write(png)
+
+
+def bgra_to_clipboard(img):
+    """Кладёт картинку в буфер обмена Windows (CF_DIB) — в X её можно вставить Ctrl+V."""
+    import ctypes, struct
+    user32, kernel32 = ctypes.windll.user32, ctypes.windll.kernel32
+    kernel32.GlobalAlloc.restype = ctypes.c_void_p
+    kernel32.GlobalLock.restype = ctypes.c_void_p
+    kernel32.GlobalLock.argtypes = [ctypes.c_void_p]
+    kernel32.GlobalUnlock.argtypes = [ctypes.c_void_p]
+    user32.SetClipboardData.argtypes = [ctypes.c_uint, ctypes.c_void_p]
+    header = struct.pack("<IiiHHIIiiII", 40, img["w"], img["h"], 1, 32, 0, 0, 0, 0, 0, 0)
+    data = header + b"".join(reversed(img["rows"]))          # DIB хранится снизу вверх
+    handle = kernel32.GlobalAlloc(0x0002, len(data))          # GMEM_MOVEABLE
+    ptr = kernel32.GlobalLock(handle)
+    ctypes.memmove(ptr, data, len(data))
+    kernel32.GlobalUnlock(handle)
+    if user32.OpenClipboard(None):
+        user32.EmptyClipboard()
+        user32.SetClipboardData(8, handle)                    # CF_DIB
+        user32.CloseClipboard()
 
 
 def app_data_dir():
@@ -2900,6 +2994,7 @@ class App:
         header.pack(fill="x", padx=18, pady=(14, 6))
 
         brand_wrap = tk.Frame(header, bg=BG)
+        self.brand_wrap = brand_wrap   # нужен для картинки-отчёта
         brand_wrap.pack(side="left")
 
         # логотип слева, название — правее него
@@ -3273,6 +3368,10 @@ class App:
         head.pack(fill="x")
         self.bundle_card_title = tk.Label(head, bg=PANEL, fg=ACCENT, font=(MONO, 8, "bold"))
         self.bundle_card_title.pack(side="left")
+        self._bundle_card_outer = card.master
+        self.share_lbl = tk.Label(head, bg=PANEL, fg=ACCENT, font=(MONO, 8, "bold"), cursor="hand2")
+        self.share_lbl.pack(side="right", padx=(14, 0))
+        self.share_lbl.bind("<Button-1>", lambda e: self.share_report())
         self.alerts_lbl = tk.Label(head, bg=PANEL, fg=ACCENT, font=(MONO, 8, "bold"), cursor="hand2")
         self.alerts_lbl.pack(side="right", padx=(14, 0))
         self.alerts_lbl.bind("<Button-1>", self.toggle_alerts)
@@ -3521,6 +3620,7 @@ class App:
         self.export_btn.configure(text=t("export_csv"))
         if hasattr(self, "settings"):
             self._refresh_alerts_label()
+        self._refresh_share_label()
         self.refresh_history_tab()
         self.pairs_hint.configure(text=t("pairs_hint", n=len(self._pairs_rows)))
         self.pairs_tree.heading("token", text=t("col_pair_token"), anchor="w")
@@ -4161,10 +4261,46 @@ class App:
             threading.Thread(target=send_telegram, args=(token, chat, f"XBIT888: {text}\n{ca}"),
                              daemon=True).start()
 
+    def share_report(self):
+        """Картинка для поста: шапка с логотипом и токеном + вся панель анализа.
+        Сохраняется в Изображения/XBIT888 и сразу кладётся в буфер обмена."""
+        t = self.tr.t
+        if not self._bundle_last_result:
+            self.status_var.set(t("share_nothing"))
+            return
+        try:
+            self.root.update_idletasks()
+            shot = capture_window_bgra(self.root)
+
+            def box(widget, pad=0):
+                return (widget.winfo_rootx() - self.root.winfo_rootx() - pad,
+                        widget.winfo_rooty() - self.root.winfo_rooty() - pad,
+                        widget.winfo_width() + 2 * pad, widget.winfo_height() + 2 * pad)
+            card = crop_bgra(shot, *box(self._bundle_card_outer))
+            header = crop_bgra(shot, *box(self.brand_wrap, 5))
+            gap = {"rows": [b""] * 6, "w": 0, "h": 6}
+            bg = tuple(int(BG[i:i + 2], 16) for i in (1, 3, 5))
+            image = stack_bgra([header, gap, card], card["w"], bg)
+
+            folder = os.path.join(os.path.expanduser("~"), "Pictures", "XBIT888")
+            os.makedirs(folder, exist_ok=True)
+            token = (self._bundle_last_result.get("token") or "token")[:10]
+            symbol = re.sub(r"[^A-Za-z0-9_-]+", "", self.token_symbol_lbl.cget("text") or "") or token
+            path = os.path.join(folder, f"xbit888_{symbol}_{time.strftime('%Y%m%d_%H%M%S')}.png")
+            bgra_to_png(image, path)
+            bgra_to_clipboard(image)
+            self.status_var.set(t("share_done", path=path))
+            self.append_log(t("share_done", path=path), "info")
+        except Exception as e:
+            self.status_var.set(t("log_unexpected_error", e=e))
+
     def toggle_alerts(self, _event=None):
         self.settings.data["alerts"] = not self.settings.data.get("alerts", True)
         self.settings.save()
         self._refresh_alerts_label()
+
+    def _refresh_share_label(self):
+        self.share_lbl.configure(text=self.tr.t("share_btn"))
 
     def _refresh_alerts_label(self):
         on = self.settings.data.get("alerts", True)
