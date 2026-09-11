@@ -39,22 +39,41 @@ I build small, single-purpose tools that watch the market instead of trusting so
 
 ### 🧬 XBIT888 — bundle checker
 
-**Paste a contract address, see who bundled the launch.** Dark trading-terminal interface, RU / EN / 中文.
+**Paste a contract address, see who bundled the launch.** Acid-terminal interface, RU / EN / 中文.
 
-- **Bundle analysis is the main screen**: every wallet that bought in the first 60 seconds after the pool opened, with its share of total supply
-- Wallets funded from the same source are grouped and highlighted together — that is one operator running many addresses, not organic demand
-- Headline numbers spelled out: % of supply taken by linked groups, % bought early overall, wallet count, group count
-- **No indexer required** — the pool, the launch block and the token identity are read straight from RPC, so tokens too fresh for Dexscreener (the ones you find on GMGN) still resolve
-- Auto-detects the network and data source from the CA alone: Uniswap V4 including Robinhood Chain, DEX pools (Raydium / Orca / Uniswap V2-V3), pump.fun bonding curves
-- Live tape underneath: 0.1s polling, gapless 1-second candles, MCAP recalculated on every trade
-- Double-click a wallet to copy the address, double-click a trade to open it in the block explorer
-- Public, free data sources only — no API keys, no wallet connection, no execution
+**Who bought the launch**
+- Every wallet that bought in the first 60 seconds after the pool opened, with its share of supply and how much it still holds right now
+- Funders traced **two hops back**, so the common trick of one master wallet paying a separate middle wallet per buyer is caught. Exchanges, bridges and contracts are filtered out so unrelated people are not lumped together
+- Linked wallets are grouped and colour-coded; a live "still held" figure shows how much of the bundle is still sitting on the supply
+- If the explorer can't be read for enough wallets, it says **"links unverified"** instead of calling the launch clean
+
+**Launch score out of 100**, with every point it loses written next to it:
+- Bundle share, early-buy share, the biggest single wallet, current top-10 holders
+- **Uniswap V4 hook check**: whether the pool's hook can cancel trades (sells included) or skim every swap, read straight from the hook address bits; dynamic fees; unpublished hook code
+- **The developer**: who actually deployed the token, how much they hold, and whether they are linked to the bundle
+- Signals that don't need the explorer: buys in the pool's creation block, brand-new wallets, near-identical spend
+- **Serial bundlers**: master wallets are remembered locally, so a bundler seen on earlier tokens is flagged
+
+**Around it**
+- **NEW PAIRS** tab: pools as they are created, each with a quick "~" score; double-click for the full check
+- **MIGRATED** tab: tokens under 12 h that are trading with real liquidity and $10K+ MCAP, priced on-chain (empty pools with painted prices filtered out)
+- **HISTORY** tab with CSV export
+- **Dump alerts**: sound + taskbar flash when the bundle starts selling; optional Telegram via `XBIT_TG_TOKEN` / `XBIT_TG_CHAT`
+- **📸 SHARE**: one click saves a report image and puts it on the clipboard, ready to paste into a post
+- Live tape underneath: 0.1 s polling, gapless 1-second candles, MCAP on every trade
+- Works without Dexscreener: pools are found on-chain from the CA alone, at any token age
+
+Public, free data sources only — no API keys, no wallet connection, no execution. History and the bundler memory stay on your machine (`%APPDATA%\XBIT888`). The score measures the launch, not the price: it is not financial advice.
 
 ```bash
 python xbit888-boundless.pyw
 ```
 
 Requires Python 3.10+ — standard library only (`tkinter`). Double-click the file directly if `.pyw` is associated with `pythonw.exe`.
+
+```bash
+python -m unittest discover tests
+```
 
 [Explore the code](https://github.com/xbit888/xbit888)
 
