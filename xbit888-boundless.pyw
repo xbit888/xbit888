@@ -290,6 +290,14 @@ TR = {
     "log_serial_bundler": {"ru": "Этот бандлер уже встречался раньше — на токенах: {tokens}",
                             "en": "This bundler has been seen before, on: {tokens}",
                             "zh": "该捆绑者此前出现过，涉及代币：{tokens}"},
+    "alerts_on": {"ru": "🔔 ОПОВЕЩЕНИЯ", "en": "🔔 ALERTS ON", "zh": "🔔 提醒开"},
+    "alerts_off": {"ru": "🔕 без звука", "en": "🔕 alerts off", "zh": "🔕 提醒关"},
+    "alert_dump_bundle": {"ru": "{symbol}: бандл сливает — было {before:.1f}%, стало {after:.1f}% предложения",
+                           "en": "{symbol}: the bundle is dumping, {before:.1f}% → {after:.1f}% of supply",
+                           "zh": "{symbol}：捆绑钱包正在抛售，{before:.1f}% → {after:.1f}%"},
+    "alert_dump_early": {"ru": "{symbol}: ранние кошельки сливают — было {before:.1f}%, стало {after:.1f}%",
+                          "en": "{symbol}: early wallets are dumping, {before:.1f}% → {after:.1f}% of supply",
+                          "zh": "{symbol}：早期钱包正在抛售，{before:.1f}% → {after:.1f}%"},
     "risk_unverified": {"ru": "связи не проверены у {n} из {total} кошельков",
                          "en": "links unverified for {n} of {total} wallets",
                          "zh": "{total} 个钱包中有 {n} 个关联未核实"},
@@ -956,6 +964,32 @@ def links_unverified(data):
     """Заметная часть кошельков не проверена — тогда "групп нет" ничего не значит."""
     failed = data.get("links_failed") or 0
     return failed >= max(2, 0.25 * (data.get("links_total") or 0))
+
+
+def flash_taskbar(root):
+    """Мигает кнопкой окна на панели задач, если окно не в фокусе (только Windows)."""
+    try:
+        import ctypes
+        from ctypes import wintypes
+
+        class FLASHWINFO(ctypes.Structure):
+            _fields_ = [("cbSize", wintypes.UINT), ("hwnd", wintypes.HWND), ("dwFlags", wintypes.DWORD),
+                        ("uCount", wintypes.UINT), ("dwTimeout", wintypes.DWORD)]
+        hwnd = ctypes.windll.user32.GetParent(root.winfo_id()) or root.winfo_id()
+        info = FLASHWINFO(ctypes.sizeof(FLASHWINFO), hwnd, 0x3 | 0xC, 5, 0)   # ALL | TIMERNOFG
+        ctypes.windll.user32.FlashWindowEx(ctypes.byref(info))
+    except Exception:
+        pass
+
+
+def send_telegram(bot_token, chat_id, text):
+    try:
+        payload = json.dumps({"chat_id": chat_id, "text": text}).encode("utf-8")
+        req = urllib.request.Request(f"https://api.telegram.org/bot{bot_token}/sendMessage", data=payload,
+                                     headers={"Content-Type": "application/json"})
+        urllib.request.urlopen(req, timeout=10).read()
+    except Exception:
+        pass
 
 
 def app_data_dir():
@@ -2764,6 +2798,8 @@ class App:
         self._holdings_stop = None
         self._dev_address = None
         self.bundlers = BundlerMemory()
+        self.settings = LocalStore("settings.json", {"alerts": True})
+        self._dump_basis = None
         self.history = CheckHistory()
         self.worker = None
         self.meta_widgets = {}
@@ -3237,6 +3273,9 @@ class App:
         head.pack(fill="x")
         self.bundle_card_title = tk.Label(head, bg=PANEL, fg=ACCENT, font=(MONO, 8, "bold"))
         self.bundle_card_title.pack(side="left")
+        self.alerts_lbl = tk.Label(head, bg=PANEL, fg=ACCENT, font=(MONO, 8, "bold"), cursor="hand2")
+        self.alerts_lbl.pack(side="right", padx=(14, 0))
+        self.alerts_lbl.bind("<Button-1>", self.toggle_alerts)
         self.bundle_window_lbl = tk.Label(head, bg=PANEL, fg=MUTED, font=(MONO, 8))
         self.bundle_window_lbl.pack(side="right")
 
@@ -3480,6 +3519,8 @@ class App:
             btn.configure(text=t(key))
         self.migrated_lbl.configure(text=t("migrated_todo"))
         self.export_btn.configure(text=t("export_csv"))
+        if hasattr(self, "settings"):
+            self._refresh_alerts_label()
         self.refresh_history_tab()
         self.pairs_hint.configure(text=t("pairs_hint", n=len(self._pairs_rows)))
         self.pairs_tree.heading("token", text=t("col_pair_token"), anchor="w")
@@ -3852,6 +3893,7 @@ class App:
         self._stop_holdings_tracker()
         self._bundle_held.clear()
         self._bundle_held_logged = None
+        self._dump_basis = None
         self._bundle_last_result = None
         self._render_risk()
         for key in self.bundle_stats:
@@ -4082,11 +4124,52 @@ class App:
         prefix = "" if len(known) == len(rows) else "≥"
         self.bundle_held_val.configure(text=f"{prefix}{held_pct:.1f}%", fg=color)
 
+        # слив: сравниваем с прошлым замером того же набора кошельков. Если набор
+        # поменялся (дочитались связи, добавились кошельки) — это не продажа,
+        # просто другая база, и её надо переустановить без тревоги
+        basis = ("grouped" if grouped else "all", len(known))
+        prev = self._dump_basis
+        if prev and prev[0] == basis and held_pct < prev[1] - max(1.0, prev[1] * 0.10):
+            self.raise_dump_alert(prev[1], held_pct, bool(grouped))
+        self._dump_basis = (basis, held_pct)
+
         still_in = sum(1 for r in known if self._bundle_held[r["wallet"]] >= 0.0005)
         if self._bundle_held_logged != (round(held_pct, 2), still_in):
             self._bundle_held_logged = (round(held_pct, 2), still_in)
             self.append_log(self.tr.t("bundle_held_log", pct=held_pct,
                                        left=still_in, total=len(rows)), "info")
+
+    def raise_dump_alert(self, before, after, is_bundle):
+        t = self.tr.t
+        symbol = self.token_symbol_lbl.cget("text") or self.token_name_lbl.cget("text") or ""
+        text = t("alert_dump_bundle" if is_bundle else "alert_dump_early",
+                 symbol=symbol, before=before, after=after)
+        self.append_log("⚠ " + text, "error")
+        self.status_var.set("⚠ " + text)
+        if not self.settings.data.get("alerts", True):
+            return
+        try:
+            import winsound
+            winsound.MessageBeep(winsound.MB_ICONEXCLAMATION)
+        except Exception:
+            pass
+        flash_taskbar(self.root)
+        # Telegram — только если пользователь сам задал своего бота в окружении
+        token, chat = os.environ.get("XBIT_TG_TOKEN"), os.environ.get("XBIT_TG_CHAT")
+        if token and chat:
+            ca = self.ca_text()
+            threading.Thread(target=send_telegram, args=(token, chat, f"XBIT888: {text}\n{ca}"),
+                             daemon=True).start()
+
+    def toggle_alerts(self, _event=None):
+        self.settings.data["alerts"] = not self.settings.data.get("alerts", True)
+        self.settings.save()
+        self._refresh_alerts_label()
+
+    def _refresh_alerts_label(self):
+        on = self.settings.data.get("alerts", True)
+        self.alerts_lbl.configure(text=self.tr.t("alerts_on" if on else "alerts_off"),
+                                  fg=ACCENT if on else MUTED)
 
     def _render_risk(self):
         """Перерисовывает вердикт по риску из последнего результата и текущих
